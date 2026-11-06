@@ -1,5 +1,19 @@
 //! What only one system needs.
 
+/// A note from the system saying what has started playing; quiet about failing, as a note is a nicety.
+/// On every system: notify-rust speaks to Windows' toasts, a Mac's Notification Centre and D-Bus elsewhere.
+pub fn announce(title: &str, artist: &str) {
+    let (title, artist) = (title.to_string(), artist.to_string());
+    std::thread::spawn(move || {
+        let _ = notify_rust::Notification::new()
+            .summary(&title)
+            .body(&artist)
+            .appname("Noctorium")
+            .timeout(notify_rust::Timeout::Milliseconds(5000))
+            .show();
+    });
+}
+
 /// Ties every program Noctorium starts -- yt-dlp, mpv -- to Noctorium itself, so that they end when it does,
 /// whether it is closed, crashes or is ended from the Task Manager. Without this a yt-dlp left running
 /// carries on, and the one-file yt-dlp leaves the copy of itself it unpacked lying in the temporary folder.
@@ -8,14 +22,6 @@
 /// ends; children join their parent's job by themselves. Elsewhere nothing is needed: a closed pipe or a
 /// timed-out wait already ends them, and mpv leaves when its song does.
 #[cfg(windows)]
-/// A note from the system saying what has started playing; quiet about failing, as a note is a nicety.
-pub fn announce(title: &str, artist: &str) {
-    let (title, artist) = (title.to_string(), artist.to_string());
-    std::thread::spawn(move || {
-        let _ = notify_rust::Notification::new().summary(&title).body(&artist).appname("Noctorium").timeout(notify_rust::Timeout::Milliseconds(5000)).show();
-    });
-}
-
 pub fn tie_children_to_this_process() {
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation, SetInformationJobObject,
