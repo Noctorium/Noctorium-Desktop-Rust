@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=Noctorium Rust
+GenericName=Music player
+Comment=YouTube Music, SoundCloud and more, in one player written in Rust
+Exec=noctorium-rust %U
+Icon=noctorium-rust
+Terminal=false
+Categories=AudioVideo;Audio;Player;
+Keywords=music;player;youtube;soundcloud;lyrics;noctorium;
+StartupWMClass=noctorium-rust

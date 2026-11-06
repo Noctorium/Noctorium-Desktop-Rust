@@ -1,0 +1,80 @@
+[package]
+name = "noctorium"
+version = "0.21.0"
+edition = "2021"
+rust-version = "1.88"
+description = "Noctorium, the music player for YouTube Music and SoundCloud, written in Rust"
+license = "GPL-3.0-only"
+repository = "https://github.com/Noctorium/Noctorium-Desktop-Rust"
+publish = false
+default-run = "noctorium"
+
+# One library and a thin program, as Noctorium Stats has it: the library is everything -- the model, the
+# queue, yt-dlp, mpv, the window -- so the tests reach all of it.
+[lib]
+name = "noctorium"
+path = "src/lib.rs"
+
+[[bin]]
+name = "noctorium"
+path = "src/main.rs"
+
+[dependencies]
+# The window: the same toolkit and version as Noctorium Stats. Drawn with wgpu first -- Direct3D 12 on
+# Windows, Vulkan or Metal elsewhere -- because OpenGL 2 is exactly what a virtual machine or a basic display
+# driver does not have; OpenGL stays as the fallback for a machine where wgpu finds no adapter.
+eframe = { version = "0.32.3", default-features = false, features = ["accesskit", "default_fonts", "glow", "wgpu", "x11", "wayland"] }
+# Covers from the services, loaded off the drawing thread and cached by egui itself.
+# eframe leaves wgpu's backends to the program: Direct3D 12 on Windows, Metal on a Mac, Vulkan for both
+# Linux and the Windows machines whose Direct3D 12 is missing. The same major version eframe is built on.
+wgpu = { version = "25", default-features = false, features = ["dx12", "metal", "vulkan", "wgsl"] }
+egui_extras = { version = "0.32.3", features = ["http", "image", "svg"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
+# Blocking HTTP with rustls: lyrics, the tool downloads, the update check. Each on a thread of its own.
+ureq = { version = "2", features = ["json"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+dirs = "6"
+rand = "0.9"
+# shinchiro's mpv builds for Windows come as 7-Zip archives. Only the unpacking: no encryption, no C.
+sevenz-rust2 = { version = "0.20", default-features = false, features = ["util"] }
+# yt-dlp's Windows build that starts without unpacking itself first comes as a zip.
+zip = { version = "9", default-features = false, features = ["deflate-flate2"] }
+flate2 = { version = "1", default-features = false, features = ["rust_backend"] }
+# yt-dlp's download is checked against the SHA-256 sums it publishes beside itself.
+sha2 = "0.10"
+# Last.fm and Libre.fm sign every request with an MD5 of its parameters.
+md-5 = "0.10"
+# Google signs a signed-in YouTube request with a SHA-1 of the session cookie.
+sha1 = "0.10"
+# Connect signs what devices say to each other with HMAC-SHA256, as the Kotlin players do.
+hmac = "0.12"
+# Matching a song across services compares titles without their accents.
+unicode-normalization = "0.1"
+# VK's streams are HLS with some parts under AES-128, decrypted for mpv by a small relay.
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+url = "2"
+# "Announcing tracks": a note from the system when a song starts, as the Kotlin desktop's tray gives one.
+notify-rust = "4"
+# Sign-ins in the system's own store: Credential Manager, the Keychain, the Secret Service. As Noctorium Stats.
+keyring = "4"
+# Lyrics: LRC timestamps and the parts of a title that are not the song.
+regex = "1"
+# The hour on the listener's own clock, for the greeting.
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+# Noctorium's icon in the tray, for while the window is closed and the music is not. Windows and the Mac;
+# on Linux it would need GTK's development files to build, and desktops there vary in whether they show one.
+[target.'cfg(any(windows, target_os = "macos"))'.dependencies]
+tray-icon = "0.21"
+
+[target."cfg(windows)".dependencies]
+# The message box for a window that cannot open, and the job object that takes yt-dlp and mpv down with
+# Noctorium however it ends.
+windows-sys = { version = "0.61.2", features = ["Win32_Foundation", "Win32_Security", "Win32_System_JobObjects", "Win32_System_Threading", "Win32_UI_Input_KeyboardAndMouse", "Win32_UI_WindowsAndMessaging"] }
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
