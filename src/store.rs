@@ -137,6 +137,8 @@ pub struct Settings {
     pub start_page: StartPage,
     /// One request to GitHub at start, to say when a newer Noctorium is out.
     pub check_updates: bool,
+    /// A newer version found is downloaded, checked and put in place by itself, ready at the next start.
+    pub auto_update: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -251,6 +253,7 @@ impl Default for Settings {
             announce_tracks: false,
             start_page: StartPage::default(),
             check_updates: true,
+            auto_update: true,
         }
     }
 }

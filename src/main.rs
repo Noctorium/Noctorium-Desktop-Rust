@@ -34,7 +34,13 @@ fn main() -> ExitCode {
         println!("{USAGE}");
         return ExitCode::SUCCESS;
     }
-    let listener = match noctorium::instance::claim() {
+    noctorium::update::clean_up();
+    let claimed = if said(&[noctorium::update::RELAUNCH_ARGUMENT]) {
+        noctorium::instance::claim_after_restart()
+    } else {
+        noctorium::instance::claim()
+    };
+    let listener = match claimed {
         // Noctorium is already open, and has been asked to come to the front.
         noctorium::instance::Instance::Second => return ExitCode::SUCCESS,
         noctorium::instance::Instance::First(listener) => listener,

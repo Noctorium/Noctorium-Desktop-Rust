@@ -29,30 +29,77 @@ fn command(tray: bool) -> Option<String> {
     Some(format!("\"{}\"{}", program()?, if tray { format!(" {TRAY_ARGUMENT}") } else { String::new() }))
 }
 
+/// The per-user Run entry, read and written through the registry's own functions. It once ran reg.exe for
+/// each: a program that starts reg.exe hidden to add itself to the Run key is what malware looks like to an
+/// antivirus, and Windows Defender said so.
 #[cfg(windows)]
 mod entry {
-    const KEY: &str = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";
+    use windows_sys::Win32::Foundation::ERROR_SUCCESS;
+    use windows_sys::Win32::System::Registry::{
+        RegCloseKey, RegDeleteValueW, RegOpenKeyExW, RegQueryValueExW, RegSetValueExW, HKEY, HKEY_CURRENT_USER, KEY_QUERY_VALUE, KEY_SET_VALUE,
+        REG_SZ,
+    };
+
+    const KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
     const NAME: &str = "Noctorium Rust";
 
-    fn reg(arguments: &[&str]) -> Option<String> {
-        let mut command = std::process::Command::new("reg");
-        command.args(arguments);
-        crate::ytdlp::hide_console(&mut command);
-        let output = command.output().ok()?;
-        output.status.success().then(|| String::from_utf8_lossy(&output.stdout).into_owned())
+    fn wide(text: &str) -> Vec<u16> {
+        text.encode_utf16().chain([0]).collect()
+    }
+
+    /// The Run key, opened for `access`, closed again once `work` is done with it.
+    fn with_key<T>(access: u32, work: impl FnOnce(HKEY) -> T) -> Option<T> {
+        let mut key: HKEY = std::ptr::null_mut();
+        let path = wide(KEY);
+        // SAFETY: `path` is a NUL-terminated UTF-16 string that outlives the call, and `key` is written by it.
+        if unsafe { RegOpenKeyExW(HKEY_CURRENT_USER, path.as_ptr(), 0, access, &mut key) } != ERROR_SUCCESS {
+            return None;
+        }
+        let result = work(key);
+        // SAFETY: `key` was opened above and is closed once.
+        unsafe { RegCloseKey(key) };
+        Some(result)
     }
 
     pub fn read() -> Option<String> {
-        let output = reg(&["query", KEY, "/v", NAME])?;
-        output.lines().find(|l| l.trim_start().starts_with(NAME)).and_then(|l| l.split("REG_SZ").nth(1)).map(|v| v.trim().to_string())
+        with_key(KEY_QUERY_VALUE, |key| {
+            let name = wide(NAME);
+            let mut kind = 0u32;
+            let mut size = 0u32;
+            // SAFETY: asks only for the size, with no buffer.
+            let asked = unsafe { RegQueryValueExW(key, name.as_ptr(), std::ptr::null(), &mut kind, std::ptr::null_mut(), &mut size) };
+            if asked != ERROR_SUCCESS || kind != REG_SZ || size == 0 {
+                return None;
+            }
+            let mut buffer = vec![0u16; (size as usize).div_ceil(2)];
+            // SAFETY: `buffer` holds `size` bytes, as the registry asked for.
+            let read = unsafe { RegQueryValueExW(key, name.as_ptr(), std::ptr::null(), &mut kind, buffer.as_mut_ptr().cast(), &mut size) };
+            if read != ERROR_SUCCESS {
+                return None;
+            }
+            let end = buffer.iter().position(|&c| c == 0).unwrap_or(buffer.len());
+            Some(String::from_utf16_lossy(&buffer[..end]))
+        })
+        .flatten()
     }
 
     pub fn write(command: &str) -> bool {
-        reg(&["add", KEY, "/v", NAME, "/t", "REG_SZ", "/d", command, "/f"]).is_some()
+        with_key(KEY_SET_VALUE, |key| {
+            let (name, value) = (wide(NAME), wide(command));
+            // SAFETY: `value` is NUL-terminated and its size in bytes includes the NUL, as REG_SZ wants.
+            unsafe { RegSetValueExW(key, name.as_ptr(), 0, REG_SZ, value.as_ptr().cast(), (value.len() * 2) as u32) == ERROR_SUCCESS }
+        })
+        .unwrap_or(false)
     }
 
     pub fn remove() -> bool {
-        read().is_none() || reg(&["delete", KEY, "/v", NAME, "/f"]).is_some()
+        read().is_none()
+            || with_key(KEY_SET_VALUE, |key| {
+                let name = wide(NAME);
+                // SAFETY: `name` is NUL-terminated.
+                unsafe { RegDeleteValueW(key, name.as_ptr()) == ERROR_SUCCESS }
+            })
+            .unwrap_or(false)
     }
 }
 

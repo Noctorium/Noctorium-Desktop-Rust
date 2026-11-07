@@ -32,6 +32,22 @@ pub fn claim() -> Instance {
     }
 }
 
+/// Claims being the one Noctorium after an update restarted it: the copy before is still closing, so its port
+/// is waited for, for up to fifteen seconds, rather than that copy being asked to come to the front.
+pub fn claim_after_restart() -> Instance {
+    if std::env::var_os("NOCTORIUM_ALLOW_SECOND").is_some() {
+        return Instance::First(None);
+    }
+    let until = std::time::Instant::now() + Duration::from_secs(15);
+    while std::time::Instant::now() < until {
+        if let Ok(listener) = TcpListener::bind(("127.0.0.1", PORT)) {
+            return Instance::First(Some(listener));
+        }
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    claim()
+}
+
 fn ask_the_other_to_show() -> bool {
     let Ok(mut stream) = TcpStream::connect_timeout(&([127, 0, 0, 1], PORT).into(), Duration::from_millis(500)) else {
         return false;

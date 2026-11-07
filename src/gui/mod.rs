@@ -9,6 +9,7 @@ mod capture;
 mod icons;
 mod pages;
 mod player;
+mod settings;
 mod widgets;
 
 use crate::bangs::{self, SearchMode};
@@ -105,6 +106,8 @@ pub enum Page {
     Queue,
     Downloads,
     Settings,
+    /// One page of Settings.
+    SettingsAt(settings::SettingsPage),
     Shortcuts,
     NowPlaying,
     Connect,
@@ -246,6 +249,10 @@ pub enum Action {
     SetFollowing { video_id: String, channel_id: String, follow: bool },
     RunDiagnostics,
     InstallUpdate,
+    /// Look for a newer version now.
+    CheckUpdates,
+    /// Close, and start again as the version put in place.
+    RestartToUpdate,
     LoadSpotifyDevices,
     /// Looks up the artist of a YouTube song, for the follow button.
     LoadArtist(String),
@@ -377,6 +384,8 @@ enum Event {
     ConnectAdded { address: String, result: Result<crate::connect::Peer, String>, quiet: bool },
     Diagnostics(Vec<(String, bool, String)>),
     UpdateStarted(Result<(), String>),
+    /// The new version is in place of this one, ready at the next start: its version, or why not.
+    UpdateStaged(Result<String, String>),
     SpotifyDevices(Result<Vec<(String, String, bool)>, String>),
     Related { key: String, result: Result<Vec<Track>, String> },
     /// A YouTube playlist changed: the library is read again, and the playlist itself if it was open.
@@ -590,6 +599,12 @@ pub struct App {
     pub diagnostics: Option<Loadable<Vec<(String, bool, String)>>>,
     pub spotify_devices: Option<Result<Vec<SpotifyDevice>, String>>,
     pub installing_update: bool,
+    /// The version put in place of this one, ready at the next start.
+    pub update_ready: Option<String>,
+    /// A check for a newer version is under way.
+    pub checking_update: bool,
+    /// When a newer version was last looked for, so one left open for days still finds it.
+    pub update_checked: Instant,
     /// Songs like each song, by its key, for Now playing's Related.
     pub related: HashMap<String, Loadable<Vec<Track>>>,
     /// What the listener calls songs here, by their key.
@@ -817,6 +832,9 @@ impl App {
             diagnostics: None,
             spotify_devices: None,
             installing_update: false,
+            update_ready: None,
+            checking_update: false,
+            update_checked: Instant::now(),
             related: HashMap::new(),
             page_opened: Instant::now(),
             track_edits: store::load_track_edits(&places_for_downloads),
@@ -868,6 +886,7 @@ impl App {
         app.read_tool_versions();
         app.load_home();
         if app.settings.check_updates {
+            app.checking_update = true;
             app.spawn(|| Event::Update(crate::update::check()));
         }
         for site in crate::scrobble::Site::ALL {
@@ -1203,7 +1222,12 @@ impl App {
                 self.history.remove(0);
             }
         }
-        if page == Page::Services && !self.services.loaded {
+        let reads_services = match &page {
+            Page::Services => true,
+            Page::SettingsAt(at) => at.reads_services(),
+            _ => false,
+        };
+        if reads_services && !self.services.loaded {
             self.services.loaded = true;
             self.spawn(|| Event::DeezerChart(crate::deezer::chart()));
             let storefront = self.settings.apple_storefront.clone();
@@ -2029,10 +2053,33 @@ impl App {
                 self.ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
             }
             Event::Update(newer) => {
-                if let Some(newer) = &newer {
-                    self.toast(format!("Noctorium {} is out. Settings › About has the link.", newer.version), false);
+                self.checking_update = false;
+                match &newer {
+                    // Fetched, checked and put in place by itself, where it can be.
+                    Some(found) if self.settings.auto_update && found.package.is_some() && self.update_ready.as_deref() != Some(found.version.as_str()) => {
+                        if !self.installing_update {
+                            self.installing_update = true;
+                            let package = found.package.clone().unwrap();
+                            let version = found.version.clone();
+                            self.spawn(move || Event::UpdateStaged(crate::update::stage(&package).map(|()| version)));
+                        }
+                    }
+                    Some(found) if self.update_ready.as_deref() != Some(found.version.as_str()) => {
+                        self.toast(format!("Noctorium {} is out. Settings › Updates installs it.", found.version), false);
+                    }
+                    _ => {}
                 }
                 self.newer = newer;
+            }
+            Event::UpdateStaged(result) => {
+                self.installing_update = false;
+                match result {
+                    Ok(version) => {
+                        self.toast(format!("Noctorium {version} is installed. It opens next time, or restart from Settings › Updates."), false);
+                        self.update_ready = Some(version);
+                    }
+                    Err(why) => self.toast(format!("The update could not be installed: {why}"), true),
+                }
             }
             Event::Scrobbled { site, failed } => match failed {
                 None => {
@@ -3003,9 +3050,30 @@ impl App {
             Action::InstallUpdate => {
                 if let Some(newer) = self.newer.clone() {
                     self.installing_update = true;
-                    self.spawn(move || Event::UpdateStarted(crate::update::install(&newer)));
+                    match newer.package.clone() {
+                        // Swapped in place: the program carries on, and the new one opens next time.
+                        Some(package) => {
+                            let version = newer.version.clone();
+                            self.spawn(move || Event::UpdateStaged(crate::update::stage(&package).map(|()| version)));
+                        }
+                        None => self.spawn(move || Event::UpdateStarted(crate::update::install(&newer))),
+                    }
                 }
             }
+            Action::CheckUpdates => {
+                self.update_checked = Instant::now();
+                if !self.checking_update {
+                    self.checking_update = true;
+                    self.spawn(|| Event::Update(crate::update::check()));
+                }
+            }
+            Action::RestartToUpdate => match crate::update::relaunch() {
+                Ok(()) => {
+                    self.quitting = true;
+                    self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                }
+                Err(why) => self.toast(why, true),
+            },
             Action::LoadArtist(video_id) => {
                 if let (Some(session), false) = (self.youtube.clone(), self.artists.contains_key(&video_id)) {
                     self.artists.insert(video_id.clone(), Loadable::Loading);
@@ -3909,6 +3977,12 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.receive();
+        // Every six hours, for a Noctorium left playing in the tray.
+        if self.settings.check_updates && !self.checking_update && self.update_ready.is_none() && self.update_checked.elapsed() > std::time::Duration::from_secs(6 * 3600) {
+            self.update_checked = Instant::now();
+            self.checking_update = true;
+            self.spawn(|| Event::Update(crate::update::check()));
+        }
         // The palette is worked out every frame -- the accent may follow the cover -- and egui dressed in it
         // only when it changed.
         let artwork = self.artwork_colour();
