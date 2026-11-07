@@ -482,3 +482,32 @@ fn two_devices_find_and_command_each_other() {
     assert!(c.peers().is_empty(), "C trusts nobody it cannot verify");
     drop((a, b, c));
 }
+
+#[test]
+#[ignore]
+fn a_click_on_a_song_being_looked_up_ahead_waits_for_that_run_rather_than_starting_another() {
+    use std::time::{Duration, Instant};
+    let backend = backend();
+    // A song not looked up yet in this run of the tests.
+    let url = "https://music.youtube.com/watch?v=dQw4w9WgXcQ";
+    let started = Instant::now();
+    let ahead = {
+        let backend = backend.clone();
+        std::thread::spawn(move || backend.prefetch_audio(url))
+    };
+    std::thread::sleep(Duration::from_millis(500));
+    let clicked = Instant::now();
+    let resolved = backend.resolve_audio(url).expect("the click gets the address");
+    let waited = clicked.elapsed();
+    let whole = started.elapsed();
+    ahead.join().unwrap();
+    println!("the lookup took {whole:.1?}; the click, half a second in, waited {waited:.1?}");
+    assert!(resolved.url.starts_with("http"));
+    // Had it started a run of its own it would have waited the whole of one; it waited only for the rest.
+    assert!(waited + Duration::from_millis(400) <= whole, "the click joined the run under way");
+    // And once known, playing it again needs no yt-dlp at all.
+    let again = Instant::now();
+    backend.resolve_audio(url).unwrap();
+    assert!(again.elapsed() < Duration::from_millis(50), "remembered: {:.1?}", again.elapsed());
+    assert!(backend.knows_audio(url));
+}

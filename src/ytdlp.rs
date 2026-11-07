@@ -29,6 +29,9 @@ pub struct Resolved {
 enum Lane {
     Browse,
     Play,
+    /// Looking up a song before it is asked for -- the next in the queue, the one the pointer rests on --
+    /// one at a time, beside the plays, so it never keeps a click waiting for a turn.
+    Ahead,
     /// Downloads and songs being saved: one at a time, beside the others, since one can take minutes.
     Download,
 }
@@ -43,6 +46,7 @@ struct Counts {
     play_waiting: usize,
     browsing: usize,
     downloading: usize,
+    ahead: usize,
 }
 
 #[derive(Default)]
@@ -75,8 +79,25 @@ impl Turns {
                 }
                 counts.downloading += 1;
             }
+            Lane::Ahead => {
+                while counts.ahead >= 1 {
+                    counts = self.freed.wait(counts).unwrap();
+                }
+                counts.ahead += 1;
+            }
         }
         Turn { turns: self, lane }
+    }
+
+    /// A turn in `lane` if one is free now, rather than waiting for one: for looking ahead at what the pointer
+    /// passes over, where a turn waited for would be for a song long since passed.
+    fn try_take(&self, lane: Lane) -> Option<Turn<'_>> {
+        let mut counts = self.counts.lock().unwrap();
+        match lane {
+            Lane::Ahead if counts.ahead == 0 => counts.ahead += 1,
+            _ => return None,
+        }
+        Some(Turn { turns: self, lane })
     }
 }
 
@@ -92,6 +113,7 @@ impl Drop for Turn<'_> {
             Lane::Play => counts.playing = counts.playing.saturating_sub(1),
             Lane::Browse => counts.browsing = counts.browsing.saturating_sub(1),
             Lane::Download => counts.downloading = counts.downloading.saturating_sub(1),
+            Lane::Ahead => counts.ahead = counts.ahead.saturating_sub(1),
         }
         drop(counts);
         self.turns.freed.notify_all();
@@ -104,6 +126,27 @@ pub struct YtDlp {
     path: RwLock<Option<PathBuf>>,
     cookies_browser: RwLock<Option<String>>,
     addresses: Mutex<HashMap<String, (Resolved, Instant)>>,
+    /// The songs being looked up now, each with what its lookup comes to, so a second ask for the same song
+    /// -- a click on the song being looked up ahead -- waits for that run rather than starting another.
+    looking_up: Mutex<HashMap<String, Arc<Lookup>>>,
+}
+
+/// One run of yt-dlp for a song's audio, and its answer once it has one.
+#[derive(Default)]
+struct Lookup {
+    answer: Mutex<Option<Result<Resolved, String>>>,
+    done: std::sync::Condvar,
+}
+
+/// How a lookup takes its turn.
+#[derive(Clone, Copy, PartialEq)]
+enum Asking {
+    /// Somebody is waiting to hear it: a turn among the plays.
+    Now,
+    /// Ahead of time, waiting for a turn among the lookups ahead.
+    Ahead,
+    /// Ahead of time, only if a turn is free at once.
+    IfFree,
 }
 
 pub type Backend = Arc<YtDlp>;
@@ -322,6 +365,25 @@ impl YtDlp {
     /// An address the player can read audio from. Remembered for half an hour, so a song played twice --
     /// or lined up next -- is not resolved twice: a run of yt-dlp is two to three seconds every time.
     pub fn resolve_audio(&self, source_url: &str) -> Result<Resolved, String> {
+        self.resolve_audio_asking(source_url, Asking::Now)
+    }
+
+    /// Looks a song up before it is asked for, so that playing it is immediate: the next in the queue.
+    pub fn prefetch_audio(&self, source_url: &str) {
+        let _ = self.resolve_audio_asking(source_url, Asking::Ahead);
+    }
+
+    /// Looks up the song the pointer rests on, if a turn is free now. False when it was not looked up.
+    pub fn prefetch_audio_if_free(&self, source_url: &str) -> bool {
+        self.resolve_audio_asking(source_url, Asking::IfFree).is_ok()
+    }
+
+    /// Whether the song's address is known now, so playing it needs no run of yt-dlp.
+    pub fn knows_audio(&self, source_url: &str) -> bool {
+        self.addresses.lock().unwrap().get(source_url).is_some_and(|(_, at)| at.elapsed() < ADDRESS_LIFETIME)
+    }
+
+    fn resolve_audio_asking(&self, source_url: &str, asking: Asking) -> Result<Resolved, String> {
         if !(source_url.starts_with("https://") || source_url.starts_with("http://")) {
             return Err("Only HTTP media sources are accepted".into());
         }
@@ -350,6 +412,42 @@ impl YtDlp {
                 return Ok(Resolved { url, user_agent: None });
             }
         }
+        // A run for this song already under way -- looked up ahead, or asked for twice -- is waited for.
+        let (lookup, ours) = {
+            let mut looking_up = self.looking_up.lock().unwrap();
+            match looking_up.get(source_url) {
+                Some(running) => (running.clone(), false),
+                None => {
+                    let lookup = Arc::new(Lookup::default());
+                    looking_up.insert(source_url.to_string(), lookup.clone());
+                    (lookup, true)
+                }
+            }
+        };
+        if !ours {
+            if asking == Asking::IfFree {
+                return Err("already being looked up".into());
+            }
+            let mut answer = lookup.answer.lock().unwrap();
+            while answer.is_none() {
+                answer = lookup.done.wait(answer).unwrap();
+            }
+            return answer.clone().unwrap();
+        }
+        let answer = self.run_for_audio(source_url, asking);
+        *lookup.answer.lock().unwrap() = Some(answer.clone());
+        lookup.done.notify_all();
+        self.looking_up.lock().unwrap().remove(source_url);
+        answer
+    }
+
+    /// The run of yt-dlp itself, in the lane `asking` says.
+    fn run_for_audio(&self, source_url: &str, asking: Asking) -> Result<Resolved, String> {
+        let turn = match asking {
+            Asking::Now => self.turns.take(Lane::Play),
+            Asking::Ahead => self.turns.take(Lane::Ahead),
+            Asking::IfFree => self.turns.try_take(Lane::Ahead).ok_or("no turn free")?,
+        };
         let mut arguments: Vec<String> = vec![
             "--format".into(),
             "bestaudio/best".into(),
@@ -363,7 +461,7 @@ impl YtDlp {
         arguments.extend(self.playback_arguments(provider_of(source_url)));
         // What follows a # is Noctorium's own note, not part of the page.
         arguments.extend(["--".into(), source_url.split('#').next().unwrap_or(source_url).to_string()]);
-        let output = self.run_retrying_in(Lane::Play, &arguments, Duration::from_secs(90))?;
+        let output = self.run_retrying_with(turn, &arguments, Duration::from_secs(90))?;
         let resolved = read_resolved(&output).ok_or("yt-dlp returned no playable audio URL")?;
         let mut addresses = self.addresses.lock().unwrap();
         if addresses.len() > 200 {
@@ -381,6 +479,18 @@ impl YtDlp {
     /// A quick failure -- the instant a laptop changes Wi-Fi -- is asked once more before anyone is told.
     fn run_retrying(&self, arguments: &[String], limit: Duration) -> Result<String, String> {
         self.run_retrying_in(Lane::Browse, arguments, limit)
+    }
+
+    /// As [`Self::run_retrying_in`], in a turn already taken.
+    fn run_retrying_with(&self, turn: Turn<'_>, arguments: &[String], limit: Duration) -> Result<String, String> {
+        let started = Instant::now();
+        match self.run_watching_in(&turn, arguments, limit, None) {
+            Err(why) if started.elapsed() < Duration::from_secs(5) && looks_transient(&why) => {
+                std::thread::sleep(Duration::from_millis(600));
+                self.run_watching_in(&turn, arguments, limit, None)
+            }
+            other => other,
+        }
     }
 
     fn run_retrying_in(&self, lane: Lane, arguments: &[String], limit: Duration) -> Result<String, String> {
@@ -459,10 +569,15 @@ impl YtDlp {
         watch: Option<&dyn Fn(&str)>,
     ) -> Result<String, String> {
         let waited = Instant::now();
-        let _turn = self.turns.take(lane);
+        let turn = self.turns.take(lane);
         if cfg!(debug_assertions) && waited.elapsed() > Duration::from_secs(1) {
             eprintln!("yt-dlp {:?}: waited {:.1?} for a turn", arguments.last(), waited.elapsed());
         }
+        self.run_watching_in(&turn, arguments, limit, watch)
+    }
+
+    /// Runs yt-dlp in a turn already taken.
+    fn run_watching_in(&self, _turn: &Turn<'_>, arguments: &[String], limit: Duration, watch: Option<&dyn Fn(&str)>) -> Result<String, String> {
         static RUNS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
         let path = self
             .path()

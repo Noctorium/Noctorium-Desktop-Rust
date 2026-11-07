@@ -249,6 +249,8 @@ pub enum Action {
     SetFollowing { video_id: String, channel_id: String, follow: bool },
     RunDiagnostics,
     InstallUpdate,
+    /// The pointer rests on a song: look it up now, so a click on it plays at once.
+    LookAhead(Track),
     /// Look for a newer version now.
     CheckUpdates,
     /// Close, and start again as the version put in place.
@@ -384,6 +386,8 @@ enum Event {
     ConnectAdded { address: String, result: Result<crate::connect::Peer, String>, quiet: bool },
     Diagnostics(Vec<(String, bool, String)>),
     UpdateStarted(Result<(), String>),
+    /// A song looked at ahead of time could not be looked up then.
+    LookAheadMissed(String),
     /// The new version is in place of this one, ready at the next start: its version, or why not.
     UpdateStaged(Result<String, String>),
     SpotifyDevices(Result<Vec<(String, String, bool)>, String>),
@@ -1692,8 +1696,29 @@ impl App {
             return;
         }
         let backend = self.backend.clone();
+        std::thread::spawn(move || backend.prefetch_audio(&next.source_url));
+    }
+
+    /// The song the pointer rests on, looked up while it is still being pointed at, so the click that usually
+    /// follows plays it at once rather than waiting for yt-dlp. Only when a turn is free: a pointer sweeping
+    /// down a list does not leave a queue of lookups behind it.
+    fn look_ahead(&mut self, track: Track) {
+        if !track.provider.playable_here()
+            || track.provider.is_reference()
+            || self.downloads.file_for(&track).is_some()
+            || self.backend.knows_audio(&track.source_url)
+            || self.prefetched.contains(&track.source_url)
+        {
+            return;
+        }
+        self.prefetched.insert(track.source_url.clone());
+        let backend = self.backend.clone();
+        let events = self.events.clone();
         std::thread::spawn(move || {
-            let _ = backend.resolve_audio(&next.source_url);
+            if !backend.prefetch_audio_if_free(&track.source_url) {
+                // Not looked up after all: the next time the pointer rests on it, try again.
+                let _ = events.send(Event::LookAheadMissed(track.source_url));
+            }
         });
     }
 
@@ -2070,6 +2095,9 @@ impl App {
                     _ => {}
                 }
                 self.newer = newer;
+            }
+            Event::LookAheadMissed(source_url) => {
+                self.prefetched.remove(&source_url);
             }
             Event::UpdateStaged(result) => {
                 self.installing_update = false;
@@ -3060,6 +3088,7 @@ impl App {
                     }
                 }
             }
+            Action::LookAhead(track) => self.look_ahead(track),
             Action::CheckUpdates => {
                 self.update_checked = Instant::now();
                 if !self.checking_update {

@@ -285,6 +285,31 @@ pub enum RowPlace {
     YouTube { id: String, url: String },
 }
 
+/// Asks for `track` to be looked up once the pointer has rested on it a quarter of a second: long enough that
+/// passing over a list does not look up every song in it, short enough to be done before most clicks land.
+fn look_ahead_on_rest(ui: &Ui, response: &egui::Response, track: &Track, playing: bool, actions: &mut Vec<Action>) {
+    // When it rested there first, and whether it has been asked for since. Moving off forgets both, so
+    // coming back counts again.
+    let id = response.id.with("rested");
+    let looked_up_slowly = matches!(track.provider, ProviderType::YoutubeMusic | ProviderType::YoutubeVideo);
+    if playing || !looked_up_slowly || !response.hovered() {
+        ui.data_mut(|d| d.remove::<(f64, bool)>(id));
+        return;
+    }
+    let now = ui.input(|i| i.time);
+    let (since, asked) = ui.data(|d| d.get_temp::<(f64, bool)>(id)).unwrap_or((now, false));
+    if asked {
+        return;
+    }
+    if now - since >= 0.25 {
+        ui.data_mut(|d| d.insert_temp(id, (since, true)));
+        actions.push(Action::LookAhead(track.clone()));
+    } else {
+        ui.data_mut(|d| d.insert_temp(id, (since, false)));
+        ui.ctx().request_repaint_after(std::time::Duration::from_millis(260));
+    }
+}
+
 /// One song: its cover, title and artist, service and length. A click plays the list from it; the right
 /// button, or the ⋯ at the end, opens what else can be done with it.
 pub fn track_row(
@@ -309,6 +334,7 @@ pub fn track_row(
     if response.hovered() || is_current_row {
         ui.painter().rect_filled(rect, CornerRadius::same(theme::corner(10)), palette.card.gamma_multiply(0.9));
     }
+    look_ahead_on_rest(ui, &response, track, playing, actions);
     let art = Rect::from_min_size(rect.left_top() + vec2(8.0, 7.0), Vec2::splat(40.0));
     paint_artwork(ui, palette, track.artwork_url.as_deref(), art, 6);
     if playing {

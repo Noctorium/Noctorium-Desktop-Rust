@@ -318,22 +318,29 @@ impl Worker {
         })
     }
 
+    /// Lets the song playing go. Told to quit, and its mpv left to end on a thread of its own: it once waited
+    /// here up to a third of a second for it, and the next song's mpv waited with it. The new one has its
+    /// own endpoint, so the two never meet.
     fn stop(&mut self) {
         if let Some(mut session) = self.session.take() {
             if let Some(connection) = session.connection.as_mut() {
+                // Silent at once, whatever it takes it to exit.
+                let _ = connection.request(serde_json::json!(["set_property", "mute", true]));
                 let _ = connection.request(serde_json::json!(["quit"]));
             }
-            let deadline = Instant::now() + Duration::from_millis(300);
-            while Instant::now() < deadline {
-                if matches!(session.child.try_wait(), Ok(Some(_))) {
-                    break;
+            std::thread::spawn(move || {
+                let deadline = Instant::now() + Duration::from_millis(300);
+                while Instant::now() < deadline {
+                    if matches!(session.child.try_wait(), Ok(Some(_))) {
+                        break;
+                    }
+                    std::thread::sleep(Duration::from_millis(15));
                 }
-                std::thread::sleep(Duration::from_millis(15));
-            }
-            let _ = session.child.kill();
-            let _ = session.child.wait();
-            #[cfg(unix)]
-            let _ = std::fs::remove_file(&session.endpoint);
+                let _ = session.child.kill();
+                let _ = session.child.wait();
+                #[cfg(unix)]
+                let _ = std::fs::remove_file(&session.endpoint);
+            });
         }
     }
 
