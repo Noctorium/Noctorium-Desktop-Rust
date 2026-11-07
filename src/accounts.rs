@@ -153,12 +153,37 @@ impl YouTube {
             .ok_or_else(|| "YouTube did not say who is signed in.".into())
     }
 
+    /// The listener's playlists, every page of them. YouTube Music sends the library's shelf a couple of dozen
+    /// at a time, with a token for the next lot; only the first page was read, so a listener with more
+    /// playlists than that saw some of them and not the rest.
     pub fn playlists(&self) -> Result<Vec<Playlist>, String> {
-        let body = self.post("browse", serde_json::json!({"browseId": "FEmusic_liked_playlists"}))?;
-        let mut cards = Vec::new();
-        find_key(&body, "musicTwoRowItemRenderer", &mut cards);
+        let mut body = self.post("browse", serde_json::json!({"browseId": "FEmusic_liked_playlists"}))?;
         let mut seen = std::collections::HashSet::new();
-        Ok(cards
+        let mut found = Vec::new();
+        let mut last_token: Option<String> = None;
+        for _ in 0..MAX_PLAYLIST_PAGES {
+            let page = Self::playlists_on(&body, &mut seen);
+            // A page that adds nothing, or no way onward, or a token come back unchanged, is the end.
+            if page.is_empty() {
+                break;
+            }
+            found.extend(page);
+            let Some(token) = continuation(&body).filter(|t| Some(t) != last_token.as_ref()) else { break };
+            body = match self.post("browse", serde_json::json!({"continuation": token})) {
+                Ok(next) => next,
+                // A page refused part way keeps what came before it.
+                Err(_) => break,
+            };
+            last_token = Some(token);
+        }
+        Ok(found)
+    }
+
+    /// The playlists on one page of the library's shelf, leaving out any in `seen` and adding the rest to it.
+    fn playlists_on(body: &serde_json::Value, seen: &mut std::collections::HashSet<String>) -> Vec<Playlist> {
+        let mut cards = Vec::new();
+        find_key(body, "musicTwoRowItemRenderer", &mut cards);
+        cards
             .into_iter()
             .filter_map(|card| {
                 let title = runs_or_simple(&card["title"])?;
@@ -184,7 +209,7 @@ impl YouTube {
                     track_count: None,
                 })
             })
-            .collect())
+            .collect()
     }
 
     /// The songs of a playlist, the listener's private ones and Liked Music (`LM`) too, page after page.
@@ -449,6 +474,9 @@ fn runs_or_simple(node: &serde_json::Value) -> Option<String> {
     Some(text.trim().to_string()).filter(|t| !t.is_empty())
 }
 
+/// The pages of playlists read at most: a couple of dozen to a page, so a thousand and more.
+const MAX_PLAYLIST_PAGES: usize = 50;
+
 fn continuation(body: &serde_json::Value) -> Option<String> {
     let mut found = Vec::new();
     find_key(body, "continuationCommand", &mut found);
@@ -554,6 +582,40 @@ impl SoundCloud {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// One page of the library's playlist grid, and the token for the next if there is one.
+    fn playlist_page(ids: &[&str], next: Option<&str>) -> serde_json::Value {
+        let cards: Vec<serde_json::Value> = ids
+            .iter()
+            .map(|id| {
+                serde_json::json!({"musicTwoRowItemRenderer": {
+                    "title": {"runs": [{"text": format!("Playlist {id}")}]},
+                    "navigationEndpoint": {"browseEndpoint": {"browseId": format!("VL{id}")}}
+                }})
+            })
+            .collect();
+        let mut page = serde_json::json!({"contents": {"items": cards}});
+        if let Some(token) = next {
+            page["contents"]["continuations"] = serde_json::json!([{"nextContinuationData": {"continuation": token}}]);
+        }
+        page
+    }
+
+    #[test]
+    fn every_page_of_playlists_is_read_once() {
+        let mut seen = std::collections::HashSet::new();
+        let first = playlist_page(&["PL1", "PL2", "LM"], Some("NEXT"));
+        let page = YouTube::playlists_on(&first, &mut seen);
+        assert_eq!(page.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["PL1", "PL2"], "Liked Music is left out");
+        // The way on to the next lot, which was never followed: only the first page was ever shown.
+        assert_eq!(continuation(&first).as_deref(), Some("NEXT"));
+        // The next page's new playlists, and none read twice.
+        let second = playlist_page(&["PL2", "PL3"], None);
+        let page = YouTube::playlists_on(&second, &mut seen);
+        assert_eq!(page.iter().map(|p| p.id.as_str()).collect::<Vec<_>>(), ["PL3"]);
+        assert_eq!(page[0].title, "Playlist PL3");
+        assert_eq!(continuation(&second), None, "the last page has no way onward");
+    }
 
     #[test]
     fn a_netscape_jar_is_read_http_only_lines_included() {
