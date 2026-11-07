@@ -511,3 +511,24 @@ fn a_click_on_a_song_being_looked_up_ahead_waits_for_that_run_rather_than_starti
     assert!(again.elapsed() < Duration::from_millis(50), "remembered: {:.1?}", again.elapsed());
     assert!(backend.knows_audio(url));
 }
+
+#[test]
+#[ignore]
+fn a_reupload_under_a_channels_name_finds_the_songs_lyrics_as_a_close_match() {
+    use noctorium::domain::{Artist, Track};
+    let track = Track {
+        provider: ProviderType::YoutubeVideo,
+        id: "reupload".into(),
+        title: "Daft Punk - Get Lucky (slowed + reverb) [lyrics]".into(),
+        artists: vec![Artist { id: "c".into(), name: "Chill Vibes Music".into(), provider: ProviderType::YoutubeVideo }],
+        album: None,
+        duration_ms: Some(310_000),
+        artwork_url: None,
+        source_url: "https://www.youtube.com/watch?v=reupload".into(),
+    };
+    let lyrics = noctorium::lyrics::fetch(&track, noctorium::lyrics::Provider::Lrclib).unwrap().expect("lyrics, by a close match");
+    let matched = lyrics.close_match.clone().expect("marked as a close match");
+    println!("{} — {} lines, synced {}: {}", lyrics.source, lyrics.lines.len(), lyrics.synced, lyrics.lines[0].text);
+    assert_eq!(matched.title.to_lowercase(), "get lucky");
+    assert!(lyrics.lines.len() > 10);
+}

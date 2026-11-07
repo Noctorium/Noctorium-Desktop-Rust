@@ -28,6 +28,16 @@ pub struct Lyrics {
     pub link: Option<String>,
     /// What every source answered, for choosing another; empty on the alternatives themselves.
     pub outcomes: Vec<Outcome>,
+    /// Set when these are not the song's own lyrics as asked for, but the closest a looser search found: a
+    /// song uploaded under somebody else's name. See [`crate::closematch`].
+    pub close_match: Option<CloseMatch>,
+}
+
+/// The song a close match's lyrics belong to, as the source names it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CloseMatch {
+    pub title: String,
+    pub artist: String,
 }
 
 /// The lyrics sources, saved by the names Kotlin gives them.
@@ -246,6 +256,7 @@ fn outcome(root: &serde_json::Value) -> Option<Lyrics> {
             provider: Provider::Lrclib,
             link: None,
             outcomes: vec![],
+            close_match: None,
         });
     }
     let (lines, synced) = from_lrc(root["syncedLyrics"].as_str(), root["plainLyrics"].as_str());
@@ -257,7 +268,18 @@ fn outcome(root: &serde_json::Value) -> Option<Lyrics> {
         provider: Provider::Lrclib,
         link: None,
         outcomes: vec![],
+        close_match: None,
     })
+}
+
+/// LRCLIB's lyrics in one of its answers, for the close match.
+pub(crate) fn lrclib_lyrics(root: &serde_json::Value) -> Option<Lyrics> {
+    outcome(root)
+}
+
+/// What LRCLIB's search answers to `parameters`, None when it could not be asked.
+pub(crate) fn lrclib_search(parameters: &[(&str, String)]) -> Option<Vec<serde_json::Value>> {
+    get("https://lrclib.net/api/search", parameters).ok().flatten().and_then(|found| found.as_array().cloned())
 }
 
 fn normalise(text: &str) -> String {
@@ -324,6 +346,15 @@ pub fn fetch(track: &Track, preferred: Provider) -> Result<Option<Lyrics>, Strin
             .map(|(h, provider)| h.join().unwrap_or_else(|_| Outcome::none(provider, Status::Error, "failed")))
             .collect()
     });
+    // No source has the song under its own name: the closest song that has lyrics, in LRCLIB's place.
+    let mut outcomes = outcomes;
+    if !outcomes.iter().any(|o| o.status == Status::Found) {
+        if let Some(close) = crate::closematch::find(track) {
+            for outcome in outcomes.iter_mut().filter(|o| o.provider == Provider::Lrclib) {
+                *outcome = Outcome { provider: Provider::Lrclib, status: Status::Found, lyrics: Some(close.clone()), detail: close.source.clone() };
+            }
+        }
+    }
     let found = |p: Provider| outcomes.iter().find(|o| o.provider == p && o.status == Status::Found).and_then(|o| o.lyrics.clone());
     let chosen = found(preferred)
         .or_else(|| Provider::ALL.iter().find_map(|p| found(*p)))
@@ -454,7 +485,7 @@ fn result(provider: Provider, lines: Vec<LyricLine>, synced: bool, link: Option<
         return Outcome::none(provider, Status::NotFound, "No matching lyrics");
     }
     let status = if lines.is_empty() { Status::LinkOnly } else { Status::Found };
-    let lyrics = Lyrics { lines, synced, source: source.to_string(), provider, link, outcomes: vec![] };
+    let lyrics = Lyrics { lines, synced, source: source.to_string(), provider, link, outcomes: vec![], close_match: None };
     Outcome { provider, status, lyrics: Some(lyrics), detail: String::new() }
 }
 
@@ -566,7 +597,7 @@ mod tests {
     #[test]
     fn the_current_line_follows_the_position() {
         let (lines, synced) = from_lrc(Some("[00:01.00]a\n[00:05.00]b\n[00:09.00]c"), None);
-        let lyrics = Lyrics { lines, synced, source: String::new(), provider: Provider::Lrclib, link: None, outcomes: vec![] };
+        let lyrics = Lyrics { lines, synced, source: String::new(), provider: Provider::Lrclib, link: None, outcomes: vec![], close_match: None };
         assert_eq!(lyrics.current_line(500), None);
         assert_eq!(lyrics.current_line(6_000), Some(1));
         assert_eq!(lyrics.current_line(60_000), Some(2));

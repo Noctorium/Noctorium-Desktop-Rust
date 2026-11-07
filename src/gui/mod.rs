@@ -133,7 +133,18 @@ pub enum Action {
     AddToNewPlaylist(Track),
     RemoveFromPlaylist { id: String, index: usize },
     MoveInPlaylist { id: String, from: usize, to: usize },
-    CreatePlaylist(String),
+    /// A new playlist: a Noctorium playlist on every device, or a local one on this computer.
+    CreatePlaylist { title: String, noctorium: bool },
+    /// Makes a playlist a Noctorium playlist, or a local one again.
+    SetPlaylistNoctorium { id: String, noctorium: bool },
+    /// Where Noctorium playlists are kept.
+    SetPlaylistCloud(crate::noctplaylists::CloudSettings),
+    /// The listener's own Google OAuth client, its id and secret.
+    SetGoogleApp { client_id: String, client_secret: String },
+    GoogleSignIn,
+    GoogleSignOut,
+    /// Syncs Noctorium playlists now.
+    SyncPlaylists,
     RenamePlaylist { id: String, title: String },
     DeletePlaylist(String),
     SaveAsLocal(Playlist),
@@ -249,6 +260,8 @@ pub enum Action {
     SetFollowing { video_id: String, channel_id: String, follow: bool },
     RunDiagnostics,
     InstallUpdate,
+    /// Hide the close-match note above the lyrics for the song, by its queue key.
+    HideCloseMatch(String),
     /// The pointer rests on a song: look it up now, so a click on it plays at once.
     LookAhead(Track),
     /// Look for a newer version now.
@@ -388,6 +401,9 @@ enum Event {
     UpdateStarted(Result<(), String>),
     /// A song looked at ahead of time could not be looked up then.
     LookAheadMissed(String),
+    /// A sync of Noctorium playlists finished: what it found, against the playlists as they were when it began.
+    PlaylistsSynced { version: u64, result: Result<crate::noctplaylists::Merge, String> },
+    GoogleSignedIn(Result<crate::noctplaylists::GoogleTokens, String>),
     /// The new version is in place of this one, ready at the next start: its version, or why not.
     UpdateStaged(Result<String, String>),
     SpotifyDevices(Result<Vec<(String, String, bool)>, String>),
@@ -529,6 +545,10 @@ pub struct Inputs {
     pub editing: Option<(Track, String, String)>,
     pub connect_address: String,
     pub connect_name: Option<String>,
+    /// The folder typed for Noctorium playlists, while it is being typed.
+    pub playlist_folder: Option<String>,
+    /// The Google OAuth client's id and secret, while they are being typed.
+    pub google_app: Option<(String, String)>,
     /// How much of the history the profile shows; more on asking.
     pub history_shown: usize,
 }
@@ -577,6 +597,8 @@ pub struct App {
     resume_at: i64,
     retried: HashSet<String>,
     prefetched: HashSet<String>,
+    /// The songs whose close-match note above the lyrics was closed, until Noctorium is next opened.
+    pub closed_close_matches: HashSet<String>,
 
     pub lyrics: HashMap<String, Loadable<Option<Lyrics>>>,
     artwork_colours: HashMap<String, Option<Color32>>,
@@ -609,6 +631,14 @@ pub struct App {
     pub checking_update: bool,
     /// When a newer version was last looked for, so one left open for days still finds it.
     pub update_checked: Instant,
+    /// How syncing Noctorium playlists stands.
+    pub playlist_sync: crate::noctplaylists::SyncStatus,
+    /// The deletions of Noctorium playlists this computer remembers, so they reach the other devices.
+    playlist_tombstones: std::collections::BTreeMap<String, i64>,
+    /// Goes up with every change to the playlists here, so a sync that finds them changed under it goes again.
+    playlists_version: u64,
+    /// When the next sync is due: soon after a change, and every few minutes.
+    playlist_sync_at: Option<Instant>,
     /// Songs like each song, by its key, for Now playing's Related.
     pub related: HashMap<String, Loadable<Vec<Track>>>,
     /// What the listener calls songs here, by their key.
@@ -816,6 +846,7 @@ impl App {
             resume_at,
             retried: HashSet::new(),
             prefetched: HashSet::new(),
+            closed_close_matches: HashSet::new(),
             lyrics: HashMap::new(),
             artwork_colours: HashMap::new(),
             glow_colour: None,
@@ -839,6 +870,11 @@ impl App {
             update_ready: None,
             checking_update: false,
             update_checked: Instant::now(),
+            playlist_sync: crate::noctplaylists::SyncStatus::default(),
+            playlist_tombstones: std::collections::BTreeMap::new(),
+            playlists_version: 0,
+            // A moment after opening, once the window is up.
+            playlist_sync_at: Some(Instant::now() + std::time::Duration::from_secs(2)),
             related: HashMap::new(),
             page_opened: Instant::now(),
             track_edits: store::load_track_edits(&places_for_downloads),
@@ -1699,6 +1735,63 @@ impl App {
         std::thread::spawn(move || backend.prefetch_audio(&next.source_url));
     }
 
+    /// The playlists were changed here: saved, and, where a Noctorium playlist was among them, synced soon.
+    fn playlists_changed(&mut self) {
+        self.playlists_version += 1;
+        store::save_playlists(&self.places, &self.library);
+        if self.settings.playlist_cloud.kind != crate::noctplaylists::CloudKind::None {
+            let soon = Instant::now() + std::time::Duration::from_secs(2);
+            if self.playlist_sync_at.is_none_or(|at| at > soon) {
+                self.playlist_sync_at = Some(soon);
+            }
+        }
+    }
+
+    /// A Noctorium playlist deleted here, remembered so the deletion reaches the other devices -- always later than
+    /// the copy deleted was last changed, even where another device's clock ran ahead of this one's.
+    fn remember_deleted(&mut self, id: &str, last_changed: i64) {
+        let at = (store::now_seconds() * 1000).max(last_changed + 1);
+        self.playlist_tombstones.insert(id.to_string(), at);
+        crate::noctplaylists::save_tombstones(self.places.file("noctorium-playlists-sync.json").as_deref(), &self.playlist_tombstones);
+    }
+
+    /// Whether this computer is signed in to Google Drive for Noctorium playlists.
+    pub fn google_signed_in(&self) -> bool {
+        crate::secrets::load(&self.places, crate::noctplaylists::GOOGLE_TOKENS).is_some()
+    }
+
+    /// Syncs Noctorium playlists with where they are kept, off the window's thread. Nothing when nowhere is chosen.
+    fn sync_playlists(&mut self) {
+        use crate::noctplaylists::{CloudKind, DriveCloud, FolderCloud};
+        let cloud = self.settings.playlist_cloud.clone();
+        if cloud.kind == CloudKind::None || self.playlist_sync.syncing {
+            return;
+        }
+        if self.playlist_tombstones.is_empty() {
+            self.playlist_tombstones = crate::noctplaylists::load_tombstones(self.places.file("noctorium-playlists-sync.json").as_deref());
+        }
+        let places = self.places.clone();
+        let local = self.library.playlists.clone();
+        let tombstones = self.playlist_tombstones.clone();
+        let version = self.playlists_version;
+        let device = if self.settings.connect_device_name.trim().is_empty() {
+            std::env::var("COMPUTERNAME").or_else(|_| std::env::var("HOSTNAME")).unwrap_or_else(|_| "Noctorium Rust".into())
+        } else {
+            self.settings.connect_device_name.clone()
+        };
+        self.playlist_sync.syncing = true;
+        self.spawn(move || {
+            let now = store::now_seconds() * 1000;
+            let result = match cloud.kind {
+                CloudKind::Folder if cloud.folder.trim().is_empty() => Err("Choose the folder to keep them in.".to_string()),
+                CloudKind::Folder => crate::noctplaylists::sync(&mut FolderCloud::new(cloud.folder.trim()), &local, &tombstones, &device, now),
+                CloudKind::GoogleDrive => google_token(&places, &cloud).and_then(|token| crate::noctplaylists::sync(&mut DriveCloud::new(token), &local, &tombstones, &device, now)),
+                CloudKind::None => Err(String::new()),
+            };
+            Event::PlaylistsSynced { version, result }
+        });
+    }
+
     /// The song the pointer rests on, looked up while it is still being pointed at, so the click that usually
     /// follows plays it at once rather than waiting for yt-dlp. Only when a turn is free: a pointer sweeping
     /// down a list does not leave a queue of lookups behind it.
@@ -2095,6 +2188,38 @@ impl App {
                     _ => {}
                 }
                 self.newer = newer;
+            }
+            Event::PlaylistsSynced { version, result } => {
+                self.playlist_sync.syncing = false;
+                match result {
+                    // Changed here while it ran: what it found is left, and it goes again with the change.
+                    Ok(_) if version != self.playlists_version => self.playlist_sync_at = Some(Instant::now()),
+                    Ok(merge) => {
+                        self.playlist_tombstones = merge.tombstones;
+                        crate::noctplaylists::save_tombstones(self.places.file("noctorium-playlists-sync.json").as_deref(), &self.playlist_tombstones);
+                        if merge.local != self.library.playlists {
+                            self.library.playlists = merge.local;
+                            store::save_playlists(&self.places, &self.library);
+                        }
+                        self.playlist_sync.problem = None;
+                        self.playlist_sync.last_synced_ms = Some(store::now_seconds() * 1000);
+                    }
+                    Err(why) => self.playlist_sync.problem = Some(why),
+                }
+            }
+            Event::GoogleSignedIn(result) => {
+                self.playlist_sync.signing_in = false;
+                match result {
+                    Ok(tokens) => {
+                        if let Ok(text) = serde_json::to_string(&tokens) {
+                            crate::secrets::save(&self.places, crate::noctplaylists::GOOGLE_TOKENS, &text);
+                        }
+                        self.playlist_sync.problem = None;
+                        self.playlist_sync_at = Some(Instant::now());
+                        self.toast("Signed in to Google Drive", false);
+                    }
+                    Err(why) => self.playlist_sync.problem = Some(why),
+                }
             }
             Event::LookAheadMissed(source_url) => {
                 self.prefetched.remove(&source_url);
@@ -2668,9 +2793,9 @@ impl App {
             Action::AddToPlaylist { id, track } => {
                 if let Some(playlist) = self.library.playlist_mut(&id) {
                     playlist.tracks.push(track.clone());
-                    playlist.updated_at_epoch_seconds = store::now_seconds();
+                    playlist.touch();
                     let title = playlist.title.clone();
-                    store::save_playlists(&self.places, &self.library);
+                    self.playlists_changed();
                     self.toast(format!("Added to {title}"), false);
                 }
             }
@@ -2686,41 +2811,89 @@ impl App {
                 if let Some(playlist) = self.library.playlist_mut(&id) {
                     if index < playlist.tracks.len() {
                         playlist.tracks.remove(index);
-                        playlist.updated_at_epoch_seconds = store::now_seconds();
+                        playlist.touch();
                     }
                 }
-                store::save_playlists(&self.places, &self.library);
+                self.playlists_changed();
             }
             Action::MoveInPlaylist { id, from, to } => {
                 if let Some(playlist) = self.library.playlist_mut(&id) {
                     if from < playlist.tracks.len() && to < playlist.tracks.len() {
                         let track = playlist.tracks.remove(from);
                         playlist.tracks.insert(to, track);
+                        playlist.touch();
                     }
                 }
-                store::save_playlists(&self.places, &self.library);
+                self.playlists_changed();
             }
-            Action::CreatePlaylist(title) => {
+            Action::CreatePlaylist { title, noctorium } => {
                 let title = title.trim();
                 if title.is_empty() {
                     return;
                 }
-                let playlist = LocalPlaylist::create(title, store::now_seconds());
+                let mut playlist = LocalPlaylist::create(title, store::now_seconds());
+                playlist.synced = noctorium;
+                playlist.touch();
                 let id = playlist.id.clone();
                 self.library.playlists.push(playlist);
-                store::save_playlists(&self.places, &self.library);
+                self.playlists_changed();
                 self.open(Page::Playlist(id));
             }
+            Action::SetPlaylistNoctorium { id, noctorium } => {
+                let mut was = None;
+                if let Some(playlist) = self.library.playlist_mut(&id).filter(|p| p.synced != noctorium) {
+                    was = Some(playlist.updated_millis());
+                    playlist.synced = noctorium;
+                    playlist.touch();
+                }
+                if let Some(was) = was {
+                    // Made local again: taken off the other devices, left on this one.
+                    if !noctorium {
+                        self.remember_deleted(&id, was);
+                    }
+                    self.playlists_changed();
+                    self.toast(if noctorium { "A Noctorium playlist now: on every device you use Noctorium on" } else { "A local playlist now, on this computer only" }, false);
+                }
+            }
+            Action::SetPlaylistCloud(cloud) => {
+                let mut settings = self.settings.clone();
+                settings.playlist_cloud = cloud;
+                self.settings = settings;
+                self.save_settings();
+                self.playlist_sync.problem = None;
+                self.playlist_sync_at = Some(Instant::now());
+            }
+            Action::SetGoogleApp { client_id, client_secret } => {
+                if !client_secret.trim().is_empty() {
+                    crate::secrets::save(&self.places, crate::noctplaylists::GOOGLE_SECRET, client_secret.trim());
+                }
+                self.settings.playlist_cloud.google_client_id = client_id.trim().to_string();
+                self.save_settings();
+            }
+            Action::GoogleSignIn => {
+                let id = self.settings.playlist_cloud.google_client_id.clone();
+                let secret = crate::secrets::load(&self.places, crate::noctplaylists::GOOGLE_SECRET).unwrap_or_default();
+                self.playlist_sync.signing_in = true;
+                self.spawn(move || Event::GoogleSignedIn(crate::noctplaylists::google_sign_in(&id, &secret, open_externally)));
+            }
+            Action::GoogleSignOut => {
+                crate::secrets::forget(&self.places, crate::noctplaylists::GOOGLE_TOKENS);
+            }
+            Action::SyncPlaylists => self.playlist_sync_at = Some(Instant::now()),
             Action::RenamePlaylist { id, title } => {
                 if let Some(playlist) = self.library.playlist_mut(&id).filter(|_| !title.trim().is_empty()) {
                     playlist.title = title.trim().to_string();
-                    playlist.updated_at_epoch_seconds = store::now_seconds();
+                    playlist.touch();
                 }
-                store::save_playlists(&self.places, &self.library);
+                self.playlists_changed();
             }
             Action::DeletePlaylist(id) => {
+                // Gone from every device, not only this one.
+                if let Some(was) = self.library.playlists.iter().find(|p| p.id == id && p.synced).map(|p| p.updated_millis()) {
+                    self.remember_deleted(&id, was);
+                }
                 self.library.playlists.retain(|p| p.id != id);
-                store::save_playlists(&self.places, &self.library);
+                self.playlists_changed();
                 if self.page == Page::Playlist(id) {
                     self.page = Page::Library;
                 }
@@ -3089,6 +3262,9 @@ impl App {
                 }
             }
             Action::LookAhead(track) => self.look_ahead(track),
+            Action::HideCloseMatch(key) => {
+                self.closed_close_matches.insert(key);
+            }
             Action::CheckUpdates => {
                 self.update_checked = Instant::now();
                 if !self.checking_update {
@@ -4006,6 +4182,11 @@ impl App {
 impl eframe::App for App {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.receive();
+        // Noctorium playlists: soon after a change, and every three minutes for what another device changed.
+        if self.playlist_sync_at.is_some_and(|at| Instant::now() >= at) {
+            self.playlist_sync_at = Some(Instant::now() + std::time::Duration::from_secs(180));
+            self.sync_playlists();
+        }
         // Every six hours, for a Noctorium left playing in the tray.
         if self.settings.check_updates && !self.checking_update && self.update_ready.is_none() && self.update_checked.elapsed() > std::time::Duration::from_secs(6 * 3600) {
             self.update_checked = Instant::now();
@@ -4162,4 +4343,22 @@ fn open_externally(target: &str) {
         c
     };
     let _ = command.spawn();
+}
+
+/// A Google Drive access token good for now, refreshed first where it has run out, for Noctorium playlists.
+fn google_token(places: &store::Places, cloud: &crate::noctplaylists::CloudSettings) -> Result<String, String> {
+    use crate::noctplaylists::{GoogleTokens, GOOGLE_SECRET, GOOGLE_TOKENS};
+    let tokens: GoogleTokens = crate::secrets::load(places, GOOGLE_TOKENS)
+        .and_then(|text| serde_json::from_str(&text).ok())
+        .ok_or("Sign in to Google Drive to sync.")?;
+    if tokens.expires_at_epoch_seconds > store::now_seconds() {
+        return Ok(tokens.access_token);
+    }
+    let secret = crate::secrets::load(places, GOOGLE_SECRET).ok_or("Paste your Google client's secret in Settings first.")?;
+    let refresh = tokens.refresh_token.ok_or("Sign in to Google Drive again.")?;
+    let fresh = crate::noctplaylists::google_refresh(&cloud.google_client_id, &secret, &refresh)?;
+    if let Ok(text) = serde_json::to_string(&fresh) {
+        crate::secrets::save(places, GOOGLE_TOKENS, &text);
+    }
+    Ok(fresh.access_token)
 }

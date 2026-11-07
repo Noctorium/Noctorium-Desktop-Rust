@@ -195,6 +195,13 @@ pub struct LocalPlaylist {
     /// Where an import made it from, kept as it was read so a Kotlin player's import finds it again.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub imported_from: Option<serde_json::Value>,
+    /// A Noctorium playlist: on every Noctorium the listener uses, kept in their own storage. See
+    /// [`crate::noctplaylists`]. False for a local one, which stays here. Kotlin's `synced`.
+    #[serde(default)]
+    pub synced: bool,
+    /// When it was last changed, in milliseconds, for telling which of two copies is newer. Kotlin's `updatedAtMillis`.
+    #[serde(default)]
+    pub updated_at_millis: i64,
 }
 
 impl LocalPlaylist {
@@ -206,12 +213,31 @@ impl LocalPlaylist {
             created_at_epoch_seconds: now,
             updated_at_epoch_seconds: now,
             imported_from: None,
+            synced: false,
+            updated_at_millis: now * 1000,
         }
+    }
+
+    /// When it was last changed, in milliseconds, from the seconds a playlist from before was kept with.
+    pub fn updated_millis(&self) -> i64 {
+        if self.updated_at_millis > 0 {
+            self.updated_at_millis
+        } else {
+            self.updated_at_epoch_seconds * 1000
+        }
+    }
+
+    /// Marks it changed now: always later than the copy it changes, even where another device's clock ran ahead
+    /// of this one's, so an edit made here is never lost to the copy it was made to.
+    pub fn touch(&mut self) {
+        let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0);
+        self.updated_at_millis = now.max(self.updated_millis() + 1);
+        self.updated_at_epoch_seconds = self.updated_at_millis / 1000;
     }
 }
 
 /// Reads a song at a time, so one from a service a later version added costs that song, not the playlist.
-fn forgiving_tracks<'de, D>(deserializer: D) -> Result<Vec<Track>, D::Error>
+pub fn forgiving_tracks<'de, D>(deserializer: D) -> Result<Vec<Track>, D::Error>
 where
     D: serde::Deserializer<'de>,
 {

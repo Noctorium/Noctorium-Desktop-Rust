@@ -53,6 +53,7 @@ impl Section {
 pub enum SettingsPage {
     Account,
     Profile,
+    NoctoriumPlaylists,
     Theme,
     Text,
     PlayerBar,
@@ -81,9 +82,10 @@ pub enum SettingsPage {
 }
 
 impl SettingsPage {
-    pub const ALL: [SettingsPage; 27] = [
+    pub const ALL: [SettingsPage; 28] = [
         SettingsPage::Account,
         SettingsPage::Profile,
+        SettingsPage::NoctoriumPlaylists,
         SettingsPage::Theme,
         SettingsPage::Text,
         SettingsPage::PlayerBar,
@@ -115,6 +117,7 @@ impl SettingsPage {
         match self {
             SettingsPage::Account => "Noctorium account",
             SettingsPage::Profile => "Your Noctorium profile",
+            SettingsPage::NoctoriumPlaylists => "Noctorium playlists",
             SettingsPage::Theme => "Theme and colours",
             SettingsPage::Text => "Typeface and text",
             SettingsPage::PlayerBar => "Player bar",
@@ -146,7 +149,7 @@ impl SettingsPage {
     pub fn section(self) -> Section {
         use SettingsPage::*;
         match self {
-            Account | Profile => Section::You,
+            Account | Profile | NoctoriumPlaylists => Section::You,
             Theme | Text | PlayerBar | NowPlaying | Browsing => Section::Look,
             Sound | PlaybackQueue | Lyrics => Section::Listening,
             YouTube | SoundCloud | Spotify | Bandcamp | Vk | AppleMusic | Deezer | Tidal | Scrobbling | Discord | StreamWidgets => Section::Services,
@@ -161,6 +164,7 @@ impl SettingsPage {
         match self {
             Account => "📊",
             Profile => "👤",
+            NoctoriumPlaylists => "☁",
             Theme => "🎨",
             Text => "🔤",
             PlayerBar => "🎛",
@@ -295,6 +299,15 @@ fn tile_text(app: &App, page: SettingsPage) -> TileText {
             None => plain("Sign in to count what you listen to".into()),
         },
         SettingsPage::Profile => TileText { title: s.profile_name.clone(), subtitle: "Your local profile and history".into(), active: false },
+        SettingsPage::NoctoriumPlaylists => {
+            use crate::noctplaylists::CloudKind;
+            match (&app.playlist_sync.problem, s.playlist_cloud.kind) {
+                (_, CloudKind::None) => plain("Your playlists on every device: choose where to keep them".into()),
+                (Some(problem), _) => plain(problem.clone()),
+                (None, CloudKind::Folder) => on(format!("In {}", s.playlist_cloud.folder), true),
+                (None, CloudKind::GoogleDrive) => on("In your Google Drive".into(), app.google_signed_in()),
+            }
+        }
         SettingsPage::Theme => {
             let theme = if s.theme == theme::CUSTOM {
                 "Your own"
@@ -483,6 +496,8 @@ use SettingsPage as P;
 const INDEX: &[Entry] = &[
     e(P::Account, "Noctorium account", Some("Your account"), "One sign-in for the players and the website, and the statistics of what you listen to.", "sign in login log in email password statistics stats plays hours make an account sign up"),
     e(P::Account, "Noctorium Connect", Some("Noctorium Connect"), "Whether this computer finds your other devices and shows up on theirs, and what they call it.", "connect devices device name network phone remote cast"),
+    e(P::NoctoriumPlaylists, "Noctorium playlists", Some("Noctorium playlists"), "Playlists on every device you use Noctorium on, kept in a synced folder or your Google Drive.", "sync cloud google drive onedrive dropbox backup phone every device cross platform"),
+    e(P::NoctoriumPlaylists, "Keep them in", Some("Keep them in"), "A folder Google Drive, OneDrive or Dropbox syncs, or your Google Drive signed in to.", "folder google drive sign in client id oauth"),
     e(P::Profile, "Profile name", Some("Profile name"), "The name this computer's Noctorium goes by.", "name profile greeting"),
     e(P::Profile, "History", Some("History"), "Keeping a history of what you play, and clearing it.", "history recently played clear forget keep"),
     e(P::Profile, "Bring over from Noctorium", Some("Bring over from Noctorium"), "The playlists, pinned songs and history of the Kotlin desktop on this computer.", "import kotlin library data folder migrate"),
@@ -524,6 +539,7 @@ const INDEX: &[Entry] = &[
     e(P::PlaybackQueue, "Keep the queue between launches", Some("The queue"), "Opens with the queue as you left it, and picks the song up where it was.", "remember queue restore queue resume save queue restore session"),
     e(P::PlaybackQueue, "Sleep timer", Some("Sleep timer"), "The music grows quieter over the sleep timer's last moments instead of stopping dead.", "sleep timer bedtime fade fade out"),
     e(P::PlaybackQueue, "SponsorBlock", Some("Skipping"), "Skip the parts of a YouTube video that are not the music: intros, outros, sponsor reads.", "sponsorblock sponsor block skip sponsors skip intro skip outro adverts ads"),
+    e(P::Lyrics, "Warn when lyrics are a close match", Some("Close matches"), "The note above lyrics found for a song under another name, that they may not be its own.", "close match wrong lyrics lyrics warning approximate fuzzy reupload uploaded"),
     e(P::Lyrics, "Open lyrics on", Some("Open lyrics on"), "Which source the lyrics open on. Every source is still asked.", "lyrics provider lyrics source lrclib genius musixmatch better lyrics karalyr synclrc happi synced lyrics"),
     e(P::YouTube, "YouTube Music account", Some("Sign-in"), "Your YouTube Music, signed in from a browser you already use.", "youtube ytm google sign in login cookies browser firefox chrome edge"),
     e(P::YouTube, "YouTube Music history", Some("History on YouTube Music"), "Add what you play to your YouTube Music history, for its recommendations.", "watch history youtube history recommendations"),
@@ -670,6 +686,7 @@ pub fn page(ui: &mut Ui, app: &App, page: SettingsPage, inputs: &mut Inputs, act
     match page {
         SettingsPage::Account => account(ui, app, inputs, actions),
         SettingsPage::Profile => profile(ui, app, inputs, actions),
+        SettingsPage::NoctoriumPlaylists => noctorium_playlists(ui, app, inputs, actions),
         SettingsPage::Theme => theme_page(ui, app, actions),
         SettingsPage::Text => text_page(ui, app, actions),
         SettingsPage::PlayerBar => player_bar(ui, app, actions),
@@ -1348,6 +1365,17 @@ fn playback_queue(ui: &mut Ui, app: &App, actions: &mut Vec<Action>) {
 
 fn lyrics(ui: &mut Ui, app: &App, actions: &mut Vec<Action>) {
     let palette = app.palette;
+    group(ui, app, "Close matches", Some("For a song no source knows by its name -- uploaded by somebody else, or \"slowed + reverb\" -- the closest song that has lyrics is shown."), |ui| {
+        with_settings(app, actions, |s| {
+            switch(
+                ui,
+                &palette,
+                &mut s.lyrics_close_match_warning,
+                "Warn when lyrics are a close match",
+                "A small note above them that they may not be the song's. Off hides the note; the close match stays.",
+            )
+        });
+    });
     group(ui, app, "Open lyrics on", Some("Which source the lyrics open on when it has them. Every source is still asked, and you can switch above the lyrics."), |ui| {
         with_settings(app, actions, |s| {
             let mut changed = false;
@@ -1620,6 +1648,105 @@ fn updates(ui: &mut Ui, app: &App, actions: &mut Vec<Action>) {
         ui.label(RichText::new("GPL-3.0-only. Lyrics from LRCLIB, Better Lyrics, Karalyr, SyncLRC, lyrics.ovh, Musixmatch, Happi and Genius.").color(palette.faint));
         if ui.link("Source on GitHub").clicked() {
             actions.push(Action::OpenUrl("https://github.com/Noctorium/Noctorium-Desktop-Rust".into()));
+        }
+    });
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// You › Noctorium playlists
+
+/// Where the playlists every Noctorium shares are kept: a folder Google Drive, OneDrive or Dropbox already syncs,
+/// or the listener's Google Drive itself, signed in to. The Kotlin desktop's page, with the same choices.
+fn noctorium_playlists(ui: &mut Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<Action>) {
+    use crate::noctplaylists::{CloudKind, CloudSettings};
+    let palette = app.palette;
+    let cloud = app.settings.playlist_cloud.clone();
+    group(
+        ui,
+        app,
+        "Noctorium playlists",
+        Some("A Noctorium playlist is on every device you use Noctorium on -- this computer, your phone, the Kotlin desktop -- kept in storage of your own. A local playlist stays on this computer. You choose which when you make one."),
+        |ui| {
+            let sync = &app.playlist_sync;
+            let status = match (&sync.problem, cloud.kind) {
+                (_, CloudKind::None) => "Not set up: Noctorium playlists stay here until you choose where to keep them.".to_string(),
+                (Some(problem), _) => problem.clone(),
+                _ if sync.syncing => "Syncing…".to_string(),
+                _ => match sync.last_synced_ms {
+                    Some(at) => format!("Kept and synced. Last synced {} seconds ago.", (crate::store::now_seconds() * 1000 - at).max(0) / 1000),
+                    None => "Kept there; not synced yet.".to_string(),
+                },
+            };
+            ui.horizontal(|ui| {
+                let colour = if sync.problem.is_some() { palette.error } else { palette.subtext };
+                ui.label(RichText::new(status).color(colour));
+                if cloud.kind != CloudKind::None && secondary(ui, &palette, "⟳ Sync now").clicked() {
+                    actions.push(Action::SyncPlaylists);
+                }
+            });
+        },
+    );
+    group(ui, app, "Keep them in", None, |ui| {
+        // A synced folder
+        if ui.radio(cloud.kind == CloudKind::Folder, RichText::new("A synced folder").color(palette.text)).clicked() {
+            actions.push(Action::SetPlaylistCloud(CloudSettings { kind: CloudKind::Folder, ..cloud.clone() }));
+        }
+        ui.label(RichText::new("A folder that Google Drive, OneDrive, Dropbox or Syncthing keeps in step. They go in a folder called \"Noctorium Playlists\" inside it.").font(theme::regular(12.0)).color(palette.faint));
+        if cloud.kind == CloudKind::Folder || cloud.kind == CloudKind::None {
+            ui.horizontal_wrapped(|ui| {
+                for (name, place) in crate::noctplaylists::synced_folders() {
+                    if secondary(ui, &palette, &format!("☁ {name}")).on_hover_text(place.display().to_string()).clicked() {
+                        actions.push(Action::SetPlaylistCloud(CloudSettings { kind: CloudKind::Folder, folder: place.display().to_string(), ..cloud.clone() }));
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                let field = inputs.playlist_folder.get_or_insert_with(|| cloud.folder.clone());
+                ui.add(egui::TextEdit::singleline(field).hint_text("The folder's path").desired_width(380.0));
+                if !field.trim().is_empty() && field.trim() != cloud.folder && primary(ui, &palette, "Use it").clicked() {
+                    actions.push(Action::SetPlaylistCloud(CloudSettings { kind: CloudKind::Folder, folder: field.trim().to_string(), ..cloud.clone() }));
+                }
+            });
+        }
+        ui.add_space(8.0);
+        // Google Drive
+        if ui.radio(cloud.kind == CloudKind::GoogleDrive, RichText::new("Google Drive").color(palette.text)).clicked() {
+            actions.push(Action::SetPlaylistCloud(CloudSettings { kind: CloudKind::GoogleDrive, ..cloud.clone() }));
+        }
+        ui.label(RichText::new("Signed in to your Google Drive. Noctorium can see only the files it makes there, nothing else in your Drive.").font(theme::regular(12.0)).color(palette.faint));
+        if cloud.kind == CloudKind::GoogleDrive {
+            if app.google_signed_in() {
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("Signed in to Google Drive").color(palette.accent));
+                    if secondary(ui, &palette, "Sign out").clicked() {
+                        actions.push(Action::GoogleSignOut);
+                    }
+                });
+            } else {
+                ui.label(RichText::new("Needs an OAuth client of your own, made once: in Google Cloud Console make a project, turn on the Google Drive API, and under Credentials make an OAuth client of the \"Desktop app\" type. The same one serves every Noctorium.").font(theme::regular(12.0)).color(palette.subtext));
+                let (id, secret) = inputs.google_app.get_or_insert_with(|| (cloud.google_client_id.clone(), String::new()));
+                labelled(ui, &palette, "Client id", |ui| ui.add(egui::TextEdit::singleline(id).desired_width(380.0)));
+                labelled(ui, &palette, "Client secret", |ui| ui.add(egui::TextEdit::singleline(secret).password(true).desired_width(380.0)));
+                ui.horizontal(|ui| {
+                    if secondary(ui, &palette, "Save").clicked() {
+                        actions.push(Action::SetGoogleApp { client_id: id.clone(), client_secret: std::mem::take(secret) });
+                    }
+                    if app.playlist_sync.signing_in {
+                        super::widgets::loading(ui, &palette, "Finish signing in on the page that opened in your browser…");
+                    } else if primary(ui, &palette, "Sign in with Google").clicked() {
+                        actions.push(Action::GoogleSignIn);
+                    }
+                    if ui.link("Open Google Cloud Console").clicked() {
+                        actions.push(Action::OpenUrl("https://console.cloud.google.com/apis/credentials".into()));
+                    }
+                });
+            }
+        }
+        if cloud.kind != CloudKind::None {
+            ui.add_space(8.0);
+            if secondary(ui, &palette, "Stop syncing").clicked() {
+                actions.push(Action::SetPlaylistCloud(CloudSettings { kind: CloudKind::None, ..cloud.clone() }));
+            }
         }
     });
 }

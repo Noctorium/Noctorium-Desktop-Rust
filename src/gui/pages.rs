@@ -360,12 +360,22 @@ fn library(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<
 
     service_library(ui, app, actions);
 
-    heading(ui, &palette, "Your playlists", Some("Made here, free to mix every service"));
+    heading(ui, &palette, "Your playlists", Some("Made here, free to mix every service. ☁ Noctorium playlists are on every device you use Noctorium on."));
     ui.horizontal(|ui| {
         let field = ui.add(egui::TextEdit::singleline(&mut inputs.new_playlist).hint_text("New playlist name").desired_width(260.0));
         let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
-        if (primary(ui, &palette, "＋ Create").clicked() || enter) && !inputs.new_playlist.trim().is_empty() {
-            actions.push(Action::CreatePlaylist(std::mem::take(&mut inputs.new_playlist)));
+        let named = !inputs.new_playlist.trim().is_empty();
+        // A Noctorium playlist first, as the one most people want; Enter makes one.
+        let where_kept = match app.settings.playlist_cloud.kind {
+            crate::noctplaylists::CloudKind::None => "On every device you use Noctorium on. Choose where they are kept in Settings › Noctorium playlists.".to_string(),
+            crate::noctplaylists::CloudKind::Folder => format!("On every device you use Noctorium on, kept in {}.", app.settings.playlist_cloud.folder),
+            crate::noctplaylists::CloudKind::GoogleDrive => "On every device you use Noctorium on, kept in your Google Drive.".to_string(),
+        };
+        if (primary(ui, &palette, "☁ Noctorium playlist").on_hover_text(where_kept).clicked() || enter) && named {
+            actions.push(Action::CreatePlaylist { title: std::mem::take(&mut inputs.new_playlist), noctorium: true });
+        }
+        if secondary(ui, &palette, "＋ Local playlist").on_hover_text("Stays on this computer only").clicked() && named {
+            actions.push(Action::CreatePlaylist { title: std::mem::take(&mut inputs.new_playlist), noctorium: false });
         }
     });
     ui.add_space(8.0);
@@ -376,7 +386,8 @@ fn library(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<
             ui.spacing_mut().item_spacing = vec2(14.0, 14.0);
             for playlist in &app.library.playlists {
                 let art = playlist.tracks.first().and_then(|t| t.artwork_url.as_deref());
-                if card(ui, &palette, art, &playlist.title, &format!("{} songs", playlist.tracks.len())).clicked() {
+                let subtitle = format!("{}{} songs", if playlist.synced { "☁ " } else { "" }, playlist.tracks.len());
+                if card(ui, &palette, art, &playlist.title, &subtitle).clicked() {
                     actions.push(Action::Open(Page::Playlist(playlist.id.clone())));
                 }
             }
@@ -505,6 +516,15 @@ fn local_playlist(ui: &mut egui::Ui, app: &App, id: &str, inputs: &mut Inputs, a
             }
         } else if secondary(ui, &palette, "🗑  Delete").clicked() {
             inputs.confirm_delete = Some(id.to_string());
+        }
+        // Which kind it is, and the way to make it the other.
+        let (label, hint) = if playlist.synced {
+            ("💻  Keep on this computer only", "Takes it off your other devices and leaves it here")
+        } else {
+            ("☁  Make it a Noctorium playlist", "Puts it on every device you use Noctorium on")
+        };
+        if secondary(ui, &palette, label).on_hover_text(hint).clicked() {
+            actions.push(Action::SetPlaylistNoctorium { id: id.to_string(), noctorium: !playlist.synced });
         }
         if !playlist.tracks.is_empty() && secondary(ui, &palette, "🔗  Share").on_hover_text("Copy a link that opens this playlist in Noctorium").clicked() {
             actions.push(Action::Copy(crate::sharelink::encode(&playlist.title, &playlist.tracks)));

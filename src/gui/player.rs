@@ -906,6 +906,7 @@ pub(super) fn lyric_lines(ui: &mut egui::Ui, app: &App, lyrics: &Lyrics, centred
     };
     let align = if centred { Align::Center } else { Align::Min };
     lyrics_sources(ui, app, lyrics, actions);
+    close_match_note(ui, app, lyrics, actions);
     if lyrics.lines.is_empty() {
         if let Some(link) = &lyrics.link {
             ui.label(RichText::new(format!("{} has these lyrics on its own page.", lyrics.provider.display_name())).color(palette.subtext));
@@ -965,6 +966,37 @@ pub(super) fn lyric_lines(ui: &mut egui::Ui, app: &App, lyrics: &Lyrics, centred
         ui.add_space(ui.available_height() * 0.3);
         });
     });
+}
+
+/// A line above lyrics found by a close match -- a song uploaded under somebody else's name -- saying whose they
+/// are and that they may not be this song's. Small, closed with its ✕ for the song, and switched off for good in
+/// Settings › Lyrics providers, which leaves the close match itself as it is.
+fn close_match_note(ui: &mut egui::Ui, app: &App, lyrics: &Lyrics, actions: &mut Vec<Action>) {
+    let Some(matched) = &lyrics.close_match else { return };
+    let key = app.queue.current().map(|t| t.queue_key()).unwrap_or_default();
+    if !app.settings.lyrics_close_match_warning || app.closed_close_matches.contains(&key) {
+        return;
+    }
+    let palette = app.palette;
+    egui::Frame::new()
+        .fill(palette.accent.gamma_multiply(0.10))
+        .corner_radius(egui::CornerRadius::same(theme::corner(8)))
+        .inner_margin(egui::Margin { left: 10, right: 4, top: 4, bottom: 4 })
+        .show(ui, |ui| {
+            ui.set_width(ui.available_width());
+            ui.horizontal(|ui| {
+                ui.label(RichText::new("ⓘ").font(theme::regular(12.0)).color(palette.accent));
+                let text = format!("Close match: “{}” by {}. May not be this song's lyrics.", matched.title, matched.artist);
+                ui.add(egui::Label::new(RichText::new(text).font(theme::regular(11.5)).color(palette.subtext)).wrap())
+                    .on_hover_text(&lyrics.source);
+                ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                    if ui.add(egui::Button::new(RichText::new("✕").font(theme::regular(11.0)).color(palette.subtext)).frame(false)).on_hover_text("Hide this note for this song").clicked() {
+                        actions.push(Action::HideCloseMatch(key.clone()));
+                    }
+                });
+            });
+        });
+    ui.add_space(4.0);
 }
 
 /// Which source the lyrics are from, and the others that had them, to switch to.

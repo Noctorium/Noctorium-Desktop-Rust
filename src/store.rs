@@ -75,6 +75,9 @@ pub struct Settings {
     pub lyrics_open: bool,
     /// The source the lyrics open on when it has them; every source is still asked.
     pub lyrics_source: crate::lyrics::Provider,
+    /// The small note above lyrics found by a close match, that they may not be the song's. Off hides the
+    /// note; the close match is still looked for and shown. Kotlin's `lyricsCloseMatchWarning`.
+    pub lyrics_close_match_warning: bool,
     /// Whether the queue left at closing is there again on opening.
     pub restore_queue: bool,
     /// Set once the Kotlin desktop's library has been read in, so it is read in once.
@@ -137,6 +140,8 @@ pub struct Settings {
     pub start_page: StartPage,
     /// One request to GitHub at start, to say when a newer Noctorium is out.
     pub check_updates: bool,
+    /// Where Noctorium playlists are kept, so every Noctorium the listener uses has them.
+    pub playlist_cloud: crate::noctplaylists::CloudSettings,
     /// A newer version found is downloaded, checked and put in place by itself, ready at the next start.
     pub auto_update: bool,
 }
@@ -218,6 +223,7 @@ impl Default for Settings {
             cookies_browser: None,
             lyrics_open: false,
             lyrics_source: crate::lyrics::Provider::default(),
+            lyrics_close_match_warning: true,
             restore_queue: true,
             imported_neighbour: false,
             equalizer: crate::audio::Equalizer::default(),
@@ -254,6 +260,7 @@ impl Default for Settings {
             start_page: StartPage::default(),
             check_updates: true,
             auto_update: true,
+            playlist_cloud: crate::noctplaylists::CloudSettings::default(),
         }
     }
 }
