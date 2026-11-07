@@ -9,7 +9,8 @@
 //! their own and change what the pages after them show: `theme:<KEY>` switches the theme, `play` plays the
 //! search's first song, and `lyrics` opens the lyrics. `looks:<name>=<VALUE>;...` changes Settings ›
 //! Personalisation by the names it is saved under, `looks:nowPlaying=STAGE;cover=RECORD`, and
-//! `settings:<words>` opens Settings searched for those words. Each waits `NOCTORIUM_CAPTURE_WAIT` seconds (eight by default) for the
+//! `settings:<words>` opens Settings searched for those words, and `settingspage:<Name>` one page of
+//! Settings by its name in the code, `settingspage:Theme`. Each waits `NOCTORIUM_CAPTURE_WAIT` seconds (eight by default) for the
 //! services to answer and the covers to arrive.
 
 use super::{Action, App, Page};
@@ -117,6 +118,7 @@ fn app_page_differs(app: &App, step: &str) -> bool {
         "queue" => app.page != Page::Queue,
         "settings" => app.page != Page::Settings,
         s if s.starts_with("settings:") => app.page != Page::Settings,
+        s if s.starts_with("settingspage:") => !matches!(app.page, Page::SettingsAt(_)),
         "nowplaying" => app.page != Page::NowPlaying,
         "shortcuts" => app.page != Page::Shortcuts,
         "services" => app.page != Page::Services,
@@ -165,6 +167,13 @@ fn open(step: &str, app: &App, actions: &mut Vec<Action>) {
     }
     if step == "diagnose" {
         actions.push(Action::RunDiagnostics);
+        return;
+    }
+    if let Some(name) = step.strip_prefix("settingspage:") {
+        match super::settings::SettingsPage::ALL.iter().find(|p| format!("{p:?}").eq_ignore_ascii_case(name)) {
+            Some(page) => actions.push(Action::Open(Page::SettingsAt(*page))),
+            None => println!("  no settings page {name}"),
+        }
         return;
     }
     if let Some(words) = step.strip_prefix("settings:") {

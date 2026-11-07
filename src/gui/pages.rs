@@ -4,7 +4,7 @@ use super::widgets::{self, back_button, card, card_strip, heading, notice, prima
 use super::{Action, App, Inputs, Loadable, Page};
 use crate::bangs::{self, SearchMode};
 use crate::domain::{format_duration, Track};
-use crate::theme::{self, PRESETS};
+use crate::theme;
 use crate::tools::{self, Tool};
 use eframe::egui::{self, vec2, Align, Layout, RichText, Stroke};
 
@@ -53,7 +53,8 @@ pub fn rail(app: &App, ctx: &egui::Context, actions: &mut Vec<Action>) {
                 if part.is_some_and(|p| !app.settings.looks.shows_page(p)) {
                     continue;
                 }
-                if widgets::nav(ui, &palette, symbol, text, *page == target).clicked() {
+                let lit = *page == target || (target == Page::Settings && matches!(page, Page::SettingsAt(_)));
+                if widgets::nav(ui, &palette, symbol, text, lit).clicked() {
                     actions.push(Action::Open(target));
                 }
             }
@@ -145,7 +146,8 @@ pub fn central(app: &App, ctx: &egui::Context, inputs: &mut Inputs, actions: &mu
                                 Some(Ok(tracks)) => songs_page(ui, app, title, "Liked on the service itself.", tracks, actions),
                             }
                         }
-                        Page::Settings => settings(ui, app, inputs, actions),
+                        Page::Settings => super::settings::home(ui, app, inputs, actions),
+                        Page::SettingsAt(page) => super::settings::page(ui, app, page, inputs, actions),
                     }
                     ui.add_space(24.0);
                 });
@@ -183,8 +185,8 @@ fn home(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
     ui.add_space(8.0);
     if app.yt_dlp.path.is_none() {
         notice(ui, &palette, "yt-dlp is not installed, so there is nothing to search or play yet. Settings › Playback tools installs it.", true);
-        if primary(ui, &palette, "Open Settings").clicked() {
-            actions.push(Action::Open(Page::Settings));
+        if primary(ui, &palette, "Open Playback tools").clicked() {
+            actions.push(Action::Open(Page::SettingsAt(super::settings::SettingsPage::PlaybackTools)));
         }
         ui.add_space(12.0);
     }
@@ -214,7 +216,7 @@ fn home(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
     }
 }
 
-fn strip(
+pub(super) fn strip(
     ui: &mut egui::Ui,
     app: &App,
     title: &str,
@@ -702,317 +704,7 @@ fn queue(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
     }
 }
 
-fn settings(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<Action>) {
-    let palette = app.palette;
-    ui.horizontal(|ui| {
-        ui.label(RichText::new("Settings").font(theme::bold(28.0)).color(palette.text));
-        ui.add_space(16.0);
-        ui.add(
-            egui::TextEdit::singleline(&mut inputs.settings_query)
-                .hint_text("🔍  Search Settings: afterglow, booster, lastfm…")
-                .desired_width(320.0),
-        );
-    });
-    // Every word typed must be found among a section's words, or the start of one.
-    let query: Vec<String> = inputs.settings_query.to_lowercase().split_whitespace().map(String::from).collect();
-    let found = std::cell::Cell::new(false);
-    let shows = |words: &str| {
-        let hit = query.iter().all(|q| words.split_whitespace().any(|w| w.starts_with(q.as_str()) || w.contains(q.as_str())));
-        if hit {
-            found.set(true);
-        }
-        hit
-    };
-
-    if shows("theme theme colour color dark light night dusk day crimson catppuccin nord dracula gruvbox rose pine tokyo solarized afterglow cinder velvet smoke glow windows 98 xp look appearance") {
-    heading(ui, &palette, "Theme", Some("Noctorium's own, and palettes from editors and terminals. Afterglow's light takes the colour of the cover playing."));
-    // Families of one -- Nord, Dracula and the rest -- share a row rather than each taking one.
-    let family_of = |preset: &theme::ThemePreset| match preset.family {
-        "Noctorium" | "Crimson" | "Catppuccin" | "Glow" | "Windows" | "Yours" => preset.family,
-        _ => "Editors and terminals",
-    };
-    let yours = theme::ThemePreset {
-        key: theme::CUSTOM,
-        name: "Your own",
-        family: "Yours",
-        colours: app.settings.looks.custom_theme.colours(),
-        glow: None,
-    };
-    let all: Vec<&theme::ThemePreset> = PRESETS.iter().chain(std::iter::once(&yours)).collect();
-    let mut families: Vec<&str> = Vec::new();
-    for preset in all.iter().copied() {
-        if !families.contains(&family_of(preset)) {
-            families.push(family_of(preset));
-        }
-    }
-    for family in families {
-        ui.label(RichText::new(family).font(theme::bold(12.5)).color(palette.subtext));
-        ui.horizontal_wrapped(|ui| {
-            ui.spacing_mut().item_spacing = vec2(10.0, 10.0);
-            for preset in all.iter().copied().filter(|p| family_of(p) == family) {
-                if widgets::theme_swatch(ui, &palette, preset, app.settings.theme == preset.key).clicked() {
-                    actions.push(Action::SetTheme(preset.key));
-                }
-            }
-        });
-        ui.add_space(6.0);
-    }
-    }
-
-    if shows("personalisation personalisation personalization looks browsing cards card buttons hover sidebar pages home parts greeting genres bandcamp animations motion text size bigger smaller zoom clock columns status follow dim panel width tab related time remaining theme accent font typeface serif monospace mono corners sharp round lyrics size alignment centred cover record vinyl circle backdrop wash layout now playing stage focus sing along banner seek progress bar wave neon beads ruler luna slider player slim floating stacked centred spotlight island display taskbar toolbar top bottom icons rounded outlined filled two-tone line glass liquid surfaces full split flow turntable poster big type visualiser meter badges marks letters custom of your own colours colors") {
-    looks_settings(ui, app, actions);
-    }
-
-    if shows("sound sound equaliser equalizer eq bass treble preset booster boost loud volume loudness normalise normalize sponsorblock sponsor skip intro") {
-    sound_settings(ui, app, actions);
-    }
-
-    if shows("downloads downloads download offline mp3 save file export folder desktop original quality") {
-    download_settings(ui, app, actions);
-    }
-
-    if shows("playback playback autoplay radio queue restore speed tempo search goes bang default service picked home shelf recent lately sleep timer fade lyrics source lrclib genius musixmatch spotify premium device everywhere hybrid") {
-    heading(ui, &palette, "Playback", None);
-    let mut autoplay = app.settings.autoplay;
-    if ui.checkbox(&mut autoplay, "Autoplay: when the queue runs out, carry on with songs like the last one").changed() {
-        actions.push(Action::SetAutoplay(autoplay));
-    }
-    let mut restore = app.settings.restore_queue;
-    if ui.checkbox(&mut restore, "Bring back the queue, and where the song was, when Noctorium opens").changed() {
-        actions.push(Action::SetRestoreQueue(restore));
-    }
-    ui.horizontal(|ui| {
-        ui.label("Speed");
-        let mut speed = app.settings.speed;
-        let slider = ui.add(egui::Slider::new(&mut speed, 0.5..=2.0).step_by(0.05).suffix("×"));
-        if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
-            actions.push(Action::SetSpeed(speed));
-        }
-        if (app.settings.speed - 1.0).abs() > 0.001 && ui.button("1×").clicked() {
-            actions.push(Action::SetSpeed(1.0));
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.label("Search goes to");
-        egui::ComboBox::from_id_salt("search-mode")
-            .selected_text(app.settings.search_mode.display_name())
-            .show_ui(ui, |ui| {
-                for mode in SearchMode::OFFERED {
-                    if ui.selectable_label(app.settings.search_mode == mode, mode.display_name()).clicked() {
-                        actions.push(Action::SetSearchMode(mode));
-                    }
-                }
-            });
-        ui.label(RichText::new("unless a bang says otherwise").color(palette.faint));
-    });
-    playback_more(ui, app, actions);
-    }
-
-    if shows("accounts accounts account sign in signin login youtube music soundcloud browser cookies firefox chrome edge history") {
-    let mut history = app.settings.youtube_history;
-    if ui.checkbox(&mut history, "Add what I play to my YouTube Music history (and let its recommendations learn from it)").changed() {
-        let mut settings = app.settings.clone();
-        settings.youtube_history = history;
-        actions.push(Action::SetSettings(Box::new(settings)));
-    }
-    heading(ui, &palette, "Accounts", Some("Your YouTube Music and SoundCloud, signed in from a browser you already use."));
-    ui.horizontal(|ui| {
-        ui.label("Sign-ins from");
-        let current = app.settings.cookies_browser.clone();
-        egui::ComboBox::from_id_salt("cookies")
-            .selected_text(current.clone().unwrap_or_else(|| "No browser".into()))
-            .show_ui(ui, |ui| {
-                if ui.selectable_label(current.is_none(), "No browser").clicked() {
-                    actions.push(Action::SetCookies(None));
-                }
-                for browser in ["firefox", "chrome", "edge", "brave", "chromium", "opera", "vivaldi", "safari"] {
-                    if ui.selectable_label(current.as_deref() == Some(browser), browser).clicked() {
-                        actions.push(Action::SetCookies(Some(browser.to_string())));
-                    }
-                }
-            });
-    });
-    ui.label(
-        RichText::new("Only browsing uses it: streams are always fetched signed out, which YouTube refuses less. Chrome and Edge lock their cookies while they are open.")
-            .font(theme::regular(12.5))
-            .color(palette.faint),
-    );
-    ui.add_space(6.0);
-    for provider in [crate::domain::ProviderType::YoutubeMusic, crate::domain::ProviderType::Soundcloud] {
-        let who = match provider {
-            crate::domain::ProviderType::Soundcloud => app.soundcloud.as_ref().map(|(_, p)| p.name.clone()),
-            _ => app.youtube.as_ref().map(|_| app.youtube_name.clone().unwrap_or_else(|| "your account".into())),
-        };
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(provider.display_name()).font(theme::bold(14.5)));
-            match who {
-                Some(name) => {
-                    ui.label(RichText::new(format!("Signed in as {name}")).color(palette.accent));
-                    if ui.button("Sign out").clicked() {
-                        actions.push(Action::SignOut(provider));
-                    }
-                }
-                None if app.signing_in == Some(provider) => {
-                    widgets::loading(ui, &palette, "Reading the browser's sign-in…");
-                }
-                None => {
-                    let label = match &app.settings.cookies_browser {
-                        Some(browser) => format!("Sign in from {browser}"),
-                        None => "Sign in from your browser".to_string(),
-                    };
-                    if primary(ui, &palette, &label).clicked() {
-                        actions.push(Action::SignIn(provider));
-                    }
-                }
-            }
-        });
-    }
-    ui.label(
-        RichText::new("Signed in, your playlists and likes are in the Library, YouTube Music's home is yours, and liking a song likes it there too.")
-            .font(theme::regular(12.5))
-            .color(palette.faint),
-    );
-    }
-
-    if shows("tools playback tools yt-dlp ytdlp mpv install update version") {
-    heading(ui, &palette, "Playback tools", Some("yt-dlp reads the services; mpv makes the sound."));
-    tool_row(ui, app, Tool::YtDlp, &app.yt_dlp, actions);
-    tool_row(ui, app, Tool::Mpv, &app.mpv, actions);
-    }
-
-    if shows("library library import bring over noctorium kotlin data folder") {
-    heading(ui, &palette, "Your library", None);
-    ui.horizontal(|ui| {
-        if secondary(ui, &palette, "Bring over from Noctorium").on_hover_text("Reads the playlists, pinned songs and history of the Kotlin desktop on this computer").clicked() {
-            actions.push(Action::ImportNeighbour);
-        }
-        if secondary(ui, &palette, "Open the data folder").clicked() {
-            actions.push(Action::OpenFolder);
-        }
-    });
-    if let Some(root) = &app.places.root {
-        ui.label(RichText::new(root.display().to_string()).font(theme::regular(12.0)).color(palette.faint));
-    }
-    }
-
-    if shows("window window tray close minimise minimize start startup sign in login boot launch announce notification note opening open page") {
-        heading(ui, &palette, "The window", None);
-        let mut announce = app.settings.announce_tracks;
-        if ui.checkbox(&mut announce, "Say what is playing when a song starts, with a note from the system while the window is away").changed() {
-            let mut settings = app.settings.clone();
-            settings.announce_tracks = announce;
-            actions.push(Action::SetSettings(Box::new(settings)));
-        }
-        ui.horizontal(|ui| {
-            ui.label("Open Noctorium on");
-            for page in crate::store::StartPage::ALL {
-                if ui.selectable_label(app.settings.start_page == page, page.label()).clicked() && app.settings.start_page != page {
-                    let mut settings = app.settings.clone();
-                    settings.start_page = page;
-                    actions.push(Action::SetSettings(Box::new(settings)));
-                }
-            }
-        });
-        let mut tray = app.settings.close_to_tray;
-        if ui.checkbox(&mut tray, "Closing the window leaves Noctorium playing in the tray").changed() {
-            actions.push(Action::SetCloseToTray(tray));
-        }
-        ui.horizontal(|ui| {
-            ui.label("Open Noctorium when you sign in to the computer");
-            for mode in [crate::startup::Mode::Off, crate::startup::Mode::Window, crate::startup::Mode::Tray] {
-                if ui.selectable_label(app.startup_mode == mode, mode.name()).clicked() && app.startup_mode != mode {
-                    actions.push(Action::SetStartup(mode));
-                }
-            }
-        });
-    }
-
-    if shows("widgets stream widgets obs streamlabs overlay browser source twitch now playing") {
-        widget_settings(ui, app, actions);
-    }
-
-    if shows("keyboard keyboard shortcuts keys hotkeys hot keys global media keys") {
-    heading(ui, &palette, "Keyboard", None);
-    ui.horizontal(|ui| {
-        if secondary(ui, &palette, "Change the shortcuts").clicked() {
-            actions.push(Action::Open(Page::Shortcuts));
-        }
-        if secondary(ui, &palette, "Show them  ?").clicked() {
-            actions.push(Action::ShowShortcuts(true));
-        }
-    });
-    let media = if app.media_keys.is_empty() {
-        if cfg!(windows) {
-            "The keyboard's media keys are held by another program.".to_string()
-        } else {
-            "The keyboard's media keys are answered on Windows.".to_string()
-        }
-    } else {
-        format!("Media keys from any program: {}", app.media_keys.join(", "))
-    };
-    ui.label(RichText::new(media).font(theme::regular(12.5)).color(palette.faint));
-    }
-
-    if shows("noctorium noctorium account sign in statistics stats plays hours email password connect devices device name network") {
-    account_settings(ui, app, inputs, actions);
-    connect_settings(ui, app, inputs, actions);
-    }
-
-    if shows("scrobbling scrobbling scrobble last.fm lastfm libre.fm librefm listenbrainz") {
-    scrobble_settings(ui, app, inputs, actions);
-    }
-
-    if shows("discord discord presence status rich profile") {
-    discord_settings(ui, app, actions);
-    }
-
-    if shows("diagnostics diagnostics check checks problem not working broken troubleshoot test yt-dlp mpv storage network") {
-    diagnostics_settings(ui, app, actions);
-    }
-
-    if shows("about about updates update version licence license newer github source install") {
-    heading(ui, &palette, "About and updates", None);
-    let mut check = app.settings.check_updates;
-    if ui.checkbox(&mut check, "Look for updates when Noctorium starts (one request to GitHub; nothing is downloaded without asking)").changed() {
-        let mut settings = app.settings.clone();
-        settings.check_updates = check;
-        actions.push(Action::SetSettings(Box::new(settings)));
-    }
-    if let Some(newer) = &app.newer {
-        ui.horizontal(|ui| {
-            ui.label(RichText::new(format!("Noctorium {} is out.", newer.version)).color(palette.accent));
-            if ui.link("See what is new").clicked() {
-                actions.push(Action::OpenUrl(newer.url.clone()));
-            }
-            if app.installing_update {
-                widgets::loading(ui, &palette, "Downloading the installer…");
-            } else if newer.installer.is_some() && primary(ui, &palette, "Install it").clicked() {
-                actions.push(Action::InstallUpdate);
-            }
-        });
-    }
-    ui.label(format!("Noctorium Rust {}: Noctorium for the desktop, in Rust", crate::version()));
-    ui.label(
-        RichText::new(
-            "Noctorium is an independent third-party client. It is not affiliated with Google, YouTube, SoundCloud, Spotify, Bandcamp, VK, Apple, Deezer, TIDAL, Last.fm, ListenBrainz or Discord.",
-        )
-        .color(palette.faint),
-    );
-    ui.label(RichText::new("GPL-3.0-only. Lyrics from LRCLIB, Better Lyrics, Karalyr, SyncLRC, lyrics.ovh, Musixmatch, Happi and Genius.").color(palette.faint));
-    ui.horizontal(|ui| {
-        if ui.link("Source on GitHub").clicked() {
-            actions.push(Action::OpenUrl("https://github.com/Noctorium/Noctorium-Desktop-Rust".into()));
-        }
-    });
-    }
-
-    if !query.is_empty() && !found.get() {
-        ui.add_space(12.0);
-        ui.label(RichText::new("No setting goes by that name.").color(palette.faint));
-    }
-}
-
-fn tool_row(ui: &mut egui::Ui, app: &App, tool: Tool, info: &super::ToolInfo, actions: &mut Vec<Action>) {
+pub(super) fn tool_row(ui: &mut egui::Ui, app: &App, tool: Tool, info: &super::ToolInfo, actions: &mut Vec<Action>) {
     let palette = app.palette;
     egui::Frame::new()
         .fill(palette.card)
@@ -1085,116 +777,6 @@ pub fn shortcuts_window(app: &App, ctx: &egui::Context, actions: &mut Vec<Action
 }
 
 
-/// Settings › Sound: the equaliser, the volume booster, evening out, and SponsorBlock.
-fn sound_settings(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
-    use crate::audio::{band_label, boost, EqualizerPreset, BANDS_HZ, MAX_GAIN_DB};
-    let palette = app.palette;
-    heading(ui, &palette, "Sound", Some("Shaped by mpv on its way out, for every song from every service."));
-
-    let mut eq = app.settings.equalizer.clone();
-    let mut changed = false;
-    ui.horizontal(|ui| {
-        changed |= ui.checkbox(&mut eq.enabled, "Equaliser").changed();
-        ui.add_enabled_ui(eq.enabled, |ui| {
-            egui::ComboBox::from_id_salt("eq-preset").selected_text(eq.preset.name()).show_ui(ui, |ui| {
-                for preset in EqualizerPreset::ALL {
-                    if ui.selectable_label(eq.preset == preset, preset.name()).clicked() {
-                        if preset == EqualizerPreset::Custom && eq.preset != EqualizerPreset::Custom {
-                            // Your own starts from the curve you were hearing.
-                            eq.custom_gains = eq.gains();
-                        }
-                        eq.preset = preset;
-                        changed = true;
-                    }
-                }
-            });
-            if ui.button("Flat").on_hover_text("Every band back to nothing").clicked() {
-                eq.preset = EqualizerPreset::Flat;
-                eq.preamp_db = 0.0;
-                changed = true;
-            }
-        });
-    });
-    ui.add_enabled_ui(eq.enabled, |ui| {
-        ui.horizontal(|ui| {
-            ui.spacing_mut().item_spacing.x = 14.0;
-            let mut gains = eq.gains();
-            let mut released = false;
-            for (index, hz) in BANDS_HZ.iter().enumerate() {
-                ui.vertical(|ui| {
-                    let slider = ui.add(
-                        egui::Slider::new(&mut gains[index], -MAX_GAIN_DB..=MAX_GAIN_DB)
-                            .vertical()
-                            .step_by(0.5)
-                            .show_value(false),
-                    );
-                    if slider.changed() {
-                        eq.preset = EqualizerPreset::Custom;
-                        eq.custom_gains = gains;
-                    }
-                    released |= slider.drag_stopped() || (slider.changed() && !slider.dragged());
-                    slider.on_hover_text(format!("{:+.1} dB", gains[index]));
-                    ui.label(RichText::new(band_label(*hz)).font(theme::regular(11.0)).color(palette.subtext));
-                });
-            }
-            ui.vertical(|ui| {
-                let slider = ui.add(
-                    egui::Slider::new(&mut eq.preamp_db, -12.0..=12.0).vertical().step_by(0.5).show_value(false),
-                );
-                released |= slider.drag_stopped() || (slider.changed() && !slider.dragged());
-                slider.on_hover_text(format!("Before the bands: {:+.1} dB", eq.preamp_db));
-                ui.label(RichText::new("Pre").font(theme::regular(11.0)).color(palette.subtext));
-            });
-            // Sent once a band is let go of: rewriting mpv's filters on every step of a drag stutters.
-            changed |= released;
-        });
-    });
-    if changed {
-        actions.push(Action::SetEqualizer(eq));
-    }
-
-    ui.add_space(8.0);
-    ui.horizontal(|ui| {
-        ui.label("Volume booster");
-        let mut percent = app.settings.boost_percent as f32;
-        let slider = ui.add(
-            egui::Slider::new(&mut percent, boost::OFF as f32..=boost::MAX as f32)
-                .step_by(boost::STEP as f64)
-                .custom_formatter(|v, _| if v as u32 <= boost::OFF { "Off".into() } else { format!("{v:.0}%") }),
-        );
-        if slider.drag_stopped() || (slider.changed() && !slider.dragged()) {
-            actions.push(Action::SetBoost(percent as u32));
-        }
-        if boost::is_on(app.settings.boost_percent) && ui.button("Off").clicked() {
-            actions.push(Action::SetBoost(boost::OFF));
-        }
-    });
-    if boost::is_loud(app.settings.boost_percent) {
-        ui.label(RichText::new(boost::LOUD_WARNING).color(palette.error));
-    }
-    ui.label(
-        RichText::new("Louder than the computer's own volume goes, behind a limiter that keeps it from breaking up.")
-            .font(theme::regular(12.5))
-            .color(palette.faint),
-    );
-
-    let mut bars = app.settings.visualiser;
-    if ui.checkbox(&mut bars, "Visualiser: bars under the cover on Now playing, measured from the sound").changed() {
-        actions.push(Action::SetVisualiser(bars));
-    }
-    let mut even = app.settings.even_loudness;
-    if ui.checkbox(&mut even, "Even out loudness: songs play at about the same volume").changed() {
-        actions.push(Action::SetEvenLoudness(even));
-    }
-    let mut sponsor = app.settings.sponsorblock;
-    if ui
-        .checkbox(&mut sponsor, "SponsorBlock: skip sponsors, intros and other parts of YouTube videos that are not the music")
-        .changed()
-    {
-        actions.push(Action::SetSponsorBlock(sponsor));
-    }
-}
-
 fn downloads_page(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
     let palette = app.palette;
     ui.horizontal(|ui| {
@@ -1236,10 +818,9 @@ fn downloads_page(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
     track_list(ui, app, &tracks, RowPlace::List, actions);
 }
 
-fn download_settings(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
+pub(super) fn download_settings(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
     use crate::downloads::ExportFormat;
     let palette = app.palette;
-    heading(ui, &palette, "Downloads", Some("Songs downloaded play offline; songs saved as files are yours to keep."));
     ui.horizontal(|ui| {
         ui.label("Save files as");
         for format in [ExportFormat::Mp3, ExportFormat::Original] {
@@ -1272,10 +853,9 @@ fn download_settings(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
     );
 }
 
-fn discord_settings(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
+pub(super) fn discord_settings(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
     use crate::discord::{ActivityKind, Paused, Timestamps};
     let palette = app.palette;
-    heading(ui, &palette, "Discord", Some("What is playing, on your Discord profile, while Discord runs on this computer."));
     let mut d = app.settings.discord.clone();
     let mut changed = false;
     ui.horizontal(|ui| {
@@ -1439,15 +1019,9 @@ pub fn quick_search(app: &App, ctx: &egui::Context, quick: Option<&mut super::Qu
         });
 }
 
-fn scrobble_settings(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<Action>) {
+pub(super) fn scrobble_settings(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<Action>) {
     use crate::scrobble::Site;
     let palette = app.palette;
-    heading(
-        ui,
-        &palette,
-        "Scrobbling",
-        Some("What you listen to, on Last.fm, Libre.fm and ListenBrainz: a song counts once half of it, or four minutes, has played."),
-    );
     for site in Site::ALL {
         egui::Frame::new()
             .fill(palette.card)
@@ -1542,9 +1116,8 @@ fn service_library(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
     }
 }
 
-fn account_settings(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<Action>) {
+pub(super) fn account_settings(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<Action>) {
     let palette = app.palette;
-    heading(ui, &palette, "Noctorium account", Some("One sign-in for the players and the website, and the statistics of what you listen to."));
     egui::Frame::new()
         .fill(palette.card)
         .corner_radius(egui::CornerRadius::same(theme::corner(10)))
@@ -1631,8 +1204,23 @@ fn services_page(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mu
     ui.add_space(6.0);
     notice(ui, &palette, crate::services::BETA_WARNING, false);
 
-    // ---- Spotify
     heading(ui, &palette, "Spotify", Some("Its songs are found on YouTube Music to be played. Paste a public playlist or album link into Search to open it."));
+    spotify_section(ui, app, inputs, actions);
+    heading(ui, &palette, "Apple Music", Some("Search it with !am. Paste an album or playlist link into Search to open it."));
+    apple_music_section(ui, app, inputs, actions);
+    heading(ui, &palette, "Tidal", Some("Search it with !td. Tidal lets programs in only through an app of your own."));
+    tidal_section(ui, app, inputs, actions);
+    heading(ui, &palette, "VK Music", Some("Search it with !vk, with your VK sign-in. Paste a VK playlist link into Search to open it."));
+    vk_section(ui, app, inputs, actions);
+    heading(ui, &palette, "Bandcamp", Some("Search it with !bc. Paste an album or song link into Search to open it. Played as the stream Bandcamp gives anyone."));
+    bandcamp_section(ui, app, inputs, actions);
+    heading(ui, &palette, "Deezer", Some("Search it with !dz. Paste a playlist or album link into Search to open it."));
+    deezer_section(ui, app, inputs, actions);
+}
+
+/// Services and Settings › Spotify: its sign-in and what is on it.
+pub(super) fn spotify_section(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<Action>) {
+    let palette = app.palette;
     ui.horizontal(|ui| match &app.services.spotify_name {
         Some(name) => {
             ui.label(RichText::new(format!("Signed in as {name}")).color(palette.accent));
@@ -1692,9 +1280,12 @@ fn services_page(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mu
             .font(theme::regular(12.5))
             .color(palette.faint),
     );
+}
+pub(super) const SPOTIFY_ABOUT: &str = "Its songs are found on YouTube Music to be played. Paste a public playlist or album link into Search to open it.";
 
-    // ---- Apple Music
-    heading(ui, &palette, "Apple Music", Some("Search it with !am. Paste an album or playlist link into Search to open it."));
+/// Services and Settings › Apple Music: its sign-in and what is on it.
+pub(super) fn apple_music_section(ui: &mut egui::Ui, app: &App, _inputs: &mut Inputs, actions: &mut Vec<Action>) {
+    let palette = app.palette;
     match &app.services.apple_charts {
         None => widgets::loading(ui, &palette, "Reading Apple Music's charts…"),
         Some(Err(why)) => notice(ui, &palette, why, true),
@@ -1741,9 +1332,12 @@ fn services_page(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mu
             }
         });
     }
+}
+pub(super) const APPLE_MUSIC_ABOUT: &str = "Search it with !am. Paste an album or playlist link into Search to open it.";
 
-    // ---- Tidal
-    heading(ui, &palette, "Tidal", Some("Search it with !td. Tidal lets programs in only through an app of your own."));
+/// Services and Settings › Tidal: its sign-in and what is on it.
+pub(super) fn tidal_section(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<Action>) {
+    let palette = app.palette;
     if inputs.tidal_client_id.is_empty() {
         inputs.tidal_client_id = app.settings.tidal_client_id.clone();
     }
@@ -1798,9 +1392,12 @@ fn services_page(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mu
             }
         });
     }
+}
+pub(super) const TIDAL_ABOUT: &str = "Search it with !td. Tidal lets programs in only through an app of your own.";
 
-    // ---- VK
-    heading(ui, &palette, "VK Music", Some("Search it with !vk, with your VK sign-in. Paste a VK playlist link into Search to open it."));
+/// Services and Settings › VK: its sign-in and what is on it.
+pub(super) fn vk_section(ui: &mut egui::Ui, app: &App, _inputs: &mut Inputs, actions: &mut Vec<Action>) {
+    let palette = app.palette;
     ui.horizontal(|ui| match &app.services.vk_name {
         Some(name) => {
             ui.label(RichText::new(format!("Signed in as {name}")).color(palette.accent));
@@ -1838,9 +1435,12 @@ fn services_page(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mu
             strip(ui, app, "For you", Some("On VK"), &app.services.vk_recommended, "vk-recommended", actions);
         }
     }
+}
+pub(super) const VK_ABOUT: &str = "Search it with !vk, with your VK sign-in. Paste a VK playlist link into Search to open it.";
 
-    // ---- Bandcamp
-    heading(ui, &palette, "Bandcamp", Some("Search it with !bc. Paste an album or song link into Search to open it. Played as the stream Bandcamp gives anyone."));
+/// Services and Settings › Bandcamp: its sign-in and what is on it.
+pub(super) fn bandcamp_section(ui: &mut egui::Ui, app: &App, _inputs: &mut Inputs, actions: &mut Vec<Action>) {
+    let palette = app.palette;
     for (title, rows, id) in [
         ("Best selling", &app.services.bandcamp_top, "bandcamp-top"),
         ("New arrivals", &app.services.bandcamp_new, "bandcamp-new"),
@@ -1852,9 +1452,12 @@ fn services_page(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mu
             Some(Ok(_)) => {}
         }
     }
+}
+pub(super) const BANDCAMP_ABOUT: &str = "Search it with !bc. Paste an album or song link into Search to open it. Played as the stream Bandcamp gives anyone.";
 
-    // ---- Deezer
-    heading(ui, &palette, "Deezer", Some("Search it with !dz. Paste a playlist or album link into Search to open it."));
+/// Services and Settings › Deezer: its sign-in and what is on it.
+pub(super) fn deezer_section(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<Action>) {
+    let palette = app.palette;
     match &app.services.deezer_chart {
         None => widgets::loading(ui, &palette, "Reading Deezer's charts…"),
         Some(Err(why)) => notice(ui, &palette, why, true),
@@ -1916,15 +1519,22 @@ fn services_page(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mu
         }
     }
 }
+pub(super) const DEEZER_ABOUT: &str = "Search it with !dz. Paste a playlist or album link into Search to open it.";
 
 /// Every shortcut, to change: in the window, and -- for the actions that can be -- from any program.
 fn shortcuts_page(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
-    use crate::shortcuts::{Group, ACTIONS};
     let palette = app.palette;
     back_button(ui, &palette, actions);
     ui.label(RichText::new("Keyboard shortcuts").font(theme::bold(28.0)).color(palette.text));
     ui.label(RichText::new("Change: press the new keys. Esc leaves it as it was; Backspace leaves it with none.").color(palette.subtext));
     ui.add_space(6.0);
+    shortcuts_editor(ui, app, actions);
+}
+
+/// The shortcuts themselves, on their own page and on Settings › Keyboard shortcuts.
+pub(super) fn shortcuts_editor(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
+    use crate::shortcuts::{Group, ACTIONS};
+    let palette = app.palette;
     let mut on = app.settings.shortcuts.global_enabled;
     if ui
         .checkbox(&mut on, "Global shortcuts: these work from any program, through the system's own hot-key service")
@@ -2701,341 +2311,8 @@ pub fn skin_title_bar(app: &App, ctx: &egui::Context) {
         });
 }
 
-/// One row of choices from Settings › Personalisation, each with what it does on hover. True when changed.
-fn choice_row<T: crate::looks::Choice>(ui: &mut egui::Ui, palette: &theme::Palette, title: &str, value: &mut T) -> bool {
-    let mut changed = false;
-    ui.horizontal_wrapped(|ui| {
-        ui.add_sized(vec2(130.0, 20.0), egui::Label::new(RichText::new(title).color(palette.subtext)));
-        for &choice in T::ALL {
-            let response = ui.selectable_value(value, choice, choice.label());
-            let response = if choice.description().is_empty() { response } else { response.on_hover_text(choice.description()) };
-            changed |= response.changed();
-        }
-    });
-    changed
-}
-
-/// Settings › Personalisation: the accent, a theme of your own, and how everything is laid out and drawn.
-fn looks_settings(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
-    use crate::looks::{parse_hex, to_hex, Accent};
-    let palette = app.palette;
-    let mut looks = app.settings.looks.clone();
-    let mut changed = false;
-    heading(ui, &palette, "Personalisation", Some("Beyond the theme: the accent, the typeface, the corners, the lyrics and how Now playing looks."));
-    changed |= choice_row(ui, &palette, "Accent", &mut looks.accent);
-    if looks.accent == Accent::Custom {
-        ui.horizontal(|ui| {
-            ui.add_space(134.0);
-            let field = ui.add_sized(vec2(96.0, 22.0), egui::TextEdit::singleline(&mut looks.custom_accent).hint_text("#B47CFF"));
-            changed |= field.changed();
-            match parse_hex(&looks.custom_accent) {
-                Some(rgb) => {
-                    let (swatch, _) = ui.allocate_exact_size(vec2(20.0, 20.0), egui::Sense::hover());
-                    ui.painter().rect_filled(swatch, 4, theme::rgb(rgb));
-                }
-                None => {
-                    ui.label(RichText::new("A colour as six hex digits, #RRGGBB.").color(palette.faint));
-                }
-            }
-        });
-    }
-    changed |= choice_row(ui, &palette, "Typeface", &mut looks.font);
-    changed |= choice_row(ui, &palette, "Text size", &mut looks.text_size);
-    ui.horizontal(|ui| {
-        ui.add_sized(vec2(130.0, 20.0), egui::Label::new(RichText::new("Animations").color(palette.subtext)));
-        changed |= ui.checkbox(&mut looks.animations, "Pages fading in, the light easing, records turning; off makes every change instant").changed();
-    });
-    changed |= choice_row(ui, &palette, "Corners", &mut looks.corners);
-    changed |= choice_row(ui, &palette, "Player bar", &mut looks.player_bar);
-    changed |= choice_row(ui, &palette, "Player bar at", &mut looks.player_bar_position);
-    ui.horizontal_wrapped(|ui| {
-        ui.add_sized(vec2(130.0, 20.0), egui::Label::new(RichText::new("Its buttons").color(palette.subtext)));
-        for button in crate::looks::PlayerButton::ALL {
-            let mut on = looks.player_buttons.contains(&button);
-            if ui.checkbox(&mut on, button.label()).changed() {
-                changed = true;
-                if on {
-                    looks.player_buttons.push(button);
-                } else {
-                    looks.player_buttons.retain(|b| *b != button);
-                }
-            }
-        }
-    });
-    ui.horizontal(|ui| {
-        ui.add_sized(vec2(130.0, 20.0), egui::Label::new(RichText::new("Taskbar clock").color(palette.subtext)));
-        changed |= ui.checkbox(&mut looks.taskbar_clock, "The time in the Taskbar layout's tray").changed();
-    });
-    changed |= choice_row(ui, &palette, "Right-hand time", &mut looks.time_display);
-    changed |= choice_row(ui, &palette, "Icons", &mut looks.icons);
-    changed |= choice_row(ui, &palette, "Surfaces", &mut looks.surface);
-    changed |= choice_row(ui, &palette, "Seek bar", &mut looks.progress);
-    ui.add_space(6.0);
-    ui.label(RichText::new("Browsing").font(theme::bold(13.0)).color(palette.subtext));
-    changed |= choice_row(ui, &palette, "Card size", &mut looks.card_size);
-    changed |= choice_row(ui, &palette, "Service badges", &mut looks.badge_policy);
-    changed |= choice_row(ui, &palette, "Badges drawn as", &mut looks.badges);
-    changed |= choice_row(ui, &palette, "Play and menu", &mut looks.hover_controls);
-    ui.horizontal_wrapped(|ui| {
-        ui.add_sized(vec2(130.0, 20.0), egui::Label::new(RichText::new("Parts of Home").color(palette.subtext)));
-        for part in crate::looks::HomePart::ALL {
-            let mut on = !looks.hidden_home.contains(&part);
-            if ui.checkbox(&mut on, part.label()).changed() {
-                changed = true;
-                if on {
-                    looks.hidden_home.retain(|p| *p != part);
-                } else {
-                    looks.hidden_home.push(part);
-                }
-            }
-        }
-    });
-    ui.horizontal_wrapped(|ui| {
-        ui.add_sized(vec2(130.0, 20.0), egui::Label::new(RichText::new("Pages in the sidebar").color(palette.subtext)));
-        for page in crate::looks::SidebarPage::ALL {
-            let mut on = !looks.hidden_pages.contains(&page);
-            if ui.checkbox(&mut on, page.label()).changed() {
-                changed = true;
-                if on {
-                    looks.hidden_pages.retain(|p| *p != page);
-                } else {
-                    looks.hidden_pages.push(page);
-                }
-            }
-        }
-        ui.label(RichText::new("Home and Settings always stay").color(palette.faint));
-    });
-    let mut genres = app.settings.bandcamp_genres.clone();
-    let mut genres_changed = false;
-    ui.horizontal_wrapped(|ui| {
-        ui.add_sized(vec2(130.0, 20.0), egui::Label::new(RichText::new("Bandcamp on Home").color(palette.subtext)));
-        for (tag, name) in crate::bandcamp::GENRES {
-            let mut on = genres.iter().any(|g| g == tag);
-            if ui.checkbox(&mut on, name).changed() {
-                genres_changed = true;
-                if on {
-                    genres.push(tag.to_string());
-                } else {
-                    genres.retain(|g| g != tag);
-                }
-            }
-        }
-    });
-    if genres_changed {
-        let mut settings = app.settings.clone();
-        settings.bandcamp_genres = genres;
-        actions.push(Action::SetSettings(Box::new(settings)));
-    }
-    ui.add_space(6.0);
-    ui.label(RichText::new("Now playing").font(theme::bold(13.0)).color(palette.subtext));
-    changed |= choice_row(ui, &palette, "Layout", &mut looks.now_playing);
-    changed |= choice_row(ui, &palette, "Cover", &mut looks.cover);
-    changed |= choice_row(ui, &palette, "Cover size", &mut looks.cover_size);
-    changed |= choice_row(ui, &palette, "Panel width", &mut looks.panel_width);
-    changed |= choice_row(ui, &palette, "Panel opens on", &mut looks.open_on);
-    ui.horizontal(|ui| {
-        ui.add_sized(vec2(130.0, 20.0), egui::Label::new(RichText::new("Under the cover").color(palette.subtext)));
-        changed |= ui.checkbox(&mut looks.lyric_line, "The line being sung (off shows the album)").changed();
-        changed |= ui.checkbox(&mut looks.follow_button, "A button to follow the artist").changed();
-    });
-    ui.horizontal_wrapped(|ui| {
-        ui.add_sized(vec2(130.0, 20.0), egui::Label::new(RichText::new("Playlist layout").color(palette.subtext)));
-        for column in crate::looks::QueueColumn::ALL {
-            let mut on = looks.queue_columns.contains(&column);
-            if ui.checkbox(&mut on, column.label()).changed() {
-                changed = true;
-                if on {
-                    // Back in its usual place among the others.
-                    looks.queue_columns.push(column);
-                    let order = |c: &crate::looks::QueueColumn| crate::looks::QueueColumn::ALL.iter().position(|x| x == c);
-                    looks.queue_columns.sort_by_key(order);
-                } else {
-                    looks.queue_columns.retain(|c| *c != column);
-                }
-            }
-        }
-        changed |= ui.checkbox(&mut looks.status_bar, "Status bar").changed();
-    });
-    changed |= choice_row(ui, &palette, "Behind it", &mut looks.backdrop);
-    changed |= choice_row(ui, &palette, "Visualiser", &mut looks.visualiser);
-    ui.add_space(6.0);
-    ui.label(RichText::new("Lyrics").font(theme::bold(13.0)).color(palette.subtext));
-    changed |= choice_row(ui, &palette, "Size", &mut looks.lyrics_size);
-    changed |= choice_row(ui, &palette, "Alignment", &mut looks.lyrics_alignment);
-    ui.horizontal(|ui| {
-        ui.add_sized(vec2(130.0, 20.0), egui::Label::new(RichText::new("Dim the others").color(palette.subtext)));
-        changed |= ui.checkbox(&mut looks.dim_lyrics, "Dim the lines not being sung").changed();
-    });
-
-    ui.add_space(10.0);
-    ui.label(RichText::new("A theme of your own").font(theme::bold(13.0)).color(palette.subtext));
-    ui.label(RichText::new("Six colours, as hex codes. Pick \"Your own\" under Theme to use them.").color(palette.faint));
-    let custom = &mut looks.custom_theme;
-    egui::Grid::new("custom-theme").num_columns(3).spacing(vec2(10.0, 6.0)).show(ui, |ui| {
-        for (name, value) in [
-            ("Page", &mut custom.background),
-            ("Panels", &mut custom.panel),
-            ("Cards", &mut custom.card),
-            ("Writing", &mut custom.text),
-            ("Quieter writing", &mut custom.subtext),
-            ("Accent", &mut custom.accent),
-        ] {
-            ui.label(name);
-            changed |= ui.add_sized(vec2(96.0, 22.0), egui::TextEdit::singleline(value)).changed();
-            match parse_hex(value) {
-                Some(rgb) => {
-                    let (swatch, _) = ui.allocate_exact_size(vec2(20.0, 20.0), egui::Sense::hover());
-                    ui.painter().rect_filled(swatch, 4, theme::rgb(rgb));
-                    ui.painter().rect_stroke(swatch, 4, Stroke::new(1.0_f32, palette.line), egui::StrokeKind::Inside);
-                }
-                None => {
-                    ui.label(RichText::new("not a colour").color(palette.error));
-                }
-            }
-            ui.end_row();
-        }
-    });
-    changed |= ui.checkbox(&mut custom.light, "It is a light theme (dark writing on a pale page)").changed();
-    let colours = custom.colours();
-    let contrast = crate::looks::contrast_ratio(colours.text, colours.background);
-    if contrast < 4.5 {
-        ui.label(RichText::new(format!("The writing stands out only {contrast:.1}:1 from the page; 4.5:1 or more reads comfortably.")).color(palette.error));
-    }
-    ui.horizontal(|ui| {
-        if app.settings.theme != theme::CUSTOM && primary(ui, &palette, "Use my theme").clicked() {
-            actions.push(Action::SetTheme(theme::CUSTOM));
-        }
-        if secondary(ui, &palette, "Start from the theme in use").on_hover_text("Copy the current theme's colours into these").clicked() {
-            let now = theme::colours_of(&app.settings.theme, &app.settings.looks);
-            let mut from = app.settings.looks.clone();
-            from.custom_theme = crate::looks::CustomTheme {
-                background: to_hex(now.background),
-                panel: to_hex(now.panel),
-                card: to_hex(now.card),
-                text: to_hex(now.text),
-                subtext: to_hex(now.subtext),
-                accent: to_hex(now.accent),
-                light: now.light,
-            };
-            actions.push(Action::SetLooks(Box::new(from)));
-        }
-        if secondary(ui, &palette, "Reset everything here").clicked() {
-            actions.push(Action::SetLooks(Box::default()));
-        }
-    });
-    if changed {
-        actions.push(Action::SetLooks(Box::new(looks)));
-    }
-}
-
-/// The rest of Settings › Playback: what a picked song does, autoplay's source, the sleep timer's fade, the
-/// lyrics' first source, and how Spotify's songs play.
-fn playback_more(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
-    use crate::store::{AutoplaySource, HomePlay, SpotifyPlayback};
-    let palette = app.palette;
-    let mut settings = app.settings.clone();
-    let mut changed = false;
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Playing a song from Home or a search");
-        changed |= ui.selectable_value(&mut settings.home_play, HomePlay::Autoplay, "Autoplay after it").on_hover_text("The song, then songs like it, as a radio started from it").changed();
-        changed |= ui.selectable_value(&mut settings.home_play, HomePlay::Shelf, "The songs around it").on_hover_text("The song, then the rest of the shelf or the results it was picked from").changed();
-    });
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Autoplay's songs come from");
-        changed |= ui.selectable_value(&mut settings.autoplay_from, AutoplaySource::SameService, "The same service").changed();
-        changed |= ui.selectable_value(&mut settings.autoplay_from, AutoplaySource::YoutubeMusic, "YouTube Music radio").on_hover_text("YouTube Music's radio after every song, whatever service it came from").changed();
-    });
-    changed |= ui.checkbox(&mut settings.autoplay_avoid_recent, "Skip songs played lately, so the same few do not keep coming round").changed();
-    ui.horizontal_wrapped(|ui| {
-        ui.label("The sleep timer fades out over");
-        for seconds in [0u32, 15, 30, 60] {
-            let label = if seconds == 0 { "No fade".to_string() } else { format!("{seconds} seconds") };
-            changed |= ui.selectable_value(&mut settings.sleep_fade_seconds, seconds, label).changed();
-        }
-    });
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Open lyrics on");
-        for provider in crate::lyrics::Provider::ALL {
-            let mut label = RichText::new(provider.display_name());
-            if let Some(key) = provider.key_environment() {
-                if std::env::var(key).map(|k| k.trim().is_empty()).unwrap_or(true) {
-                    label = label.color(palette.faint);
-                }
-            }
-            let response = ui.selectable_value(&mut settings.lyrics_source, provider, label);
-            let response = match provider.key_environment() {
-                Some(key) => response.on_hover_text(format!("Needs a key in {key}")),
-                None => response.on_hover_text("Every source is still asked"),
-            };
-            changed |= response.changed();
-        }
-    });
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Spotify's songs");
-        changed |= ui.selectable_value(&mut settings.spotify_playback, SpotifyPlayback::Matched, "Matched and played here").changed();
-        changed |= ui
-            .selectable_value(&mut settings.spotify_playback, SpotifyPlayback::OnSpotify, "Played on Spotify (Premium)")
-            .on_hover_text("Spotify's songs play in your Spotify app, on the device you choose")
-            .changed();
-    });
-    if settings.spotify_playback == SpotifyPlayback::OnSpotify {
-        ui.horizontal_wrapped(|ui| {
-            ui.label("On");
-            if crate::spotify::current().is_none() {
-                ui.label(RichText::new("sign in to Spotify under Services first").color(palette.faint));
-                return;
-            }
-            changed |= ui.selectable_value(&mut settings.spotify_device, String::new(), "Whichever is active").changed();
-            match &app.spotify_devices {
-                Some(Ok(devices)) => {
-                    for (id, name, active) in devices {
-                        let label = if *active { format!("{name} (active)") } else { name.clone() };
-                        changed |= ui.selectable_value(&mut settings.spotify_device, id.clone(), label).changed();
-                    }
-                }
-                Some(Err(why)) => {
-                    ui.label(RichText::new(why).color(palette.error));
-                }
-                None => {}
-            }
-            if ui.small_button("⟳ Devices").clicked() {
-                actions.push(Action::LoadSpotifyDevices);
-            }
-        });
-    }
-    ui.horizontal_wrapped(|ui| {
-        ui.label("Everywhere (!all) asks");
-        for provider in [
-            crate::domain::ProviderType::YoutubeMusic,
-            crate::domain::ProviderType::YoutubeVideo,
-            crate::domain::ProviderType::Soundcloud,
-            crate::domain::ProviderType::Bandcamp,
-            crate::domain::ProviderType::Spotify,
-            crate::domain::ProviderType::Vk,
-            crate::domain::ProviderType::Deezer,
-            crate::domain::ProviderType::AppleMusic,
-            crate::domain::ProviderType::Tidal,
-        ] {
-            let mut on = settings.hybrid_search.contains(&provider);
-            if ui.checkbox(&mut on, provider.display_name()).changed() {
-                changed = true;
-                if on {
-                    settings.hybrid_search.push(provider);
-                } else {
-                    settings.hybrid_search.retain(|p| *p != provider);
-                }
-            }
-        }
-    });
-    if changed {
-        actions.push(Action::SetSettings(Box::new(settings)));
-    }
-}
-
 /// Connect's switch and this computer's name on the listener's other devices.
-fn connect_settings(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<Action>) {
-    let palette = app.palette;
-    heading(ui, &palette, "Noctorium Connect", Some("Whether this computer finds your other devices and shows up on theirs, and what they call it."));
+pub(super) fn connect_settings(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<Action>) {
     let mut on = app.settings.connect_enabled;
     if ui.checkbox(&mut on, "Noctorium Connect on (off stops it altogether)").changed() {
         let mut settings = app.settings.clone();
@@ -3060,9 +2337,8 @@ fn connect_settings(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: 
 }
 
 /// Checks that yt-dlp, mpv, storage and the network are working, for when something is not.
-fn diagnostics_settings(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
+pub(super) fn diagnostics_settings(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
     let palette = app.palette;
-    heading(ui, &palette, "Diagnostics", Some("Checks that yt-dlp, mpv, storage and the services can be reached, for when something is not working."));
     match &app.diagnostics {
         Some(super::Loadable::Loading) => widgets::loading(ui, &palette, "Checking…"),
         Some(super::Loadable::Ready(checks)) => {
@@ -3093,10 +2369,9 @@ fn diagnostics_settings(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>)
 }
 
 /// Settings › Stream widgets: what plays, for OBS or Streamlabs, in seven looks.
-fn widget_settings(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
+pub(super) fn widget_settings(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
     use crate::widgets::LOOKS;
     let palette = app.palette;
-    heading(ui, &palette, "Stream widgets", Some("What is playing, over your stream in OBS or Streamlabs: add the address as a browser source."));
     let mut w = app.settings.widgets.clone();
     let mut changed = false;
     changed |= ui.checkbox(&mut w.enabled, "Serve the stream widgets").changed();
@@ -3309,8 +2584,8 @@ fn connect_page(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut
             "Connect works between devices signed in to the same Noctorium account. Sign in under Settings › Noctorium account.".into()
         });
         notice(ui, &palette, &why, app.connect_problem.is_some());
-        if app.account.is_none() && primary(ui, &palette, "Go to Settings").clicked() {
-            actions.push(Action::Open(Page::Settings));
+        if app.account.is_none() && primary(ui, &palette, "Sign in to Noctorium").clicked() {
+            actions.push(Action::Open(Page::SettingsAt(super::settings::SettingsPage::Account)));
         }
         connect_extras(ui, app, inputs, actions);
         return;
