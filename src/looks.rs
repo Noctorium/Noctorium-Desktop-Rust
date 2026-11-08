@@ -637,6 +637,8 @@ pub struct Looks {
     pub status_bar: bool,
     pub hidden_home: Vec<HomePart>,
     pub hidden_pages: Vec<SidebarPage>,
+    /// The listener's own picture behind the secret Shadow theme, as this computer's copy of it; empty for none.
+    pub shadow_picture: String,
 }
 
 impl Default for Looks {
@@ -677,6 +679,7 @@ impl Default for Looks {
             status_bar: true,
             hidden_home: vec![],
             hidden_pages: vec![],
+            shadow_picture: String::new(),
         }
     }
 }

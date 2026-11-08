@@ -10,6 +10,7 @@ mod icons;
 mod pages;
 mod player;
 mod settings;
+mod shadow;
 mod widgets;
 
 use crate::bangs::{self, SearchMode};
@@ -262,6 +263,8 @@ pub enum Action {
     InstallUpdate,
     /// A code entered in Settings › Experimental.
     Code(settings::ExperimentalCode),
+    /// Keep the picture at this path behind the Shadow theme; empty takes it away.
+    SetShadowPicture(String),
     /// Hide the close-match note above the lyrics for the song, by its queue key.
     HideCloseMatch(String),
     /// The pointer rests on a song: look it up now, so a click on it plays at once.
@@ -554,6 +557,9 @@ pub struct Inputs {
     /// What is typed in Settings › Experimental's code box, and what it last said back.
     pub code: String,
     pub code_answer: Option<String>,
+    /// The picture's path typed for the Shadow theme, and what came of the last one.
+    pub shadow_path: String,
+    pub shadow_answer: Option<String>,
     /// How much of the history the profile shows; more on asking.
     pub history_shown: usize,
 }
@@ -677,6 +683,10 @@ pub struct App {
     tray_shown: (Option<String>, bool),
     /// Set by Quit in the tray: the window really closes, rather than going to the tray.
     quitting: bool,
+    /// When the code "sh@d0w" started its takeover, which closes Noctorium when it is over.
+    shadow_takeover: Option<Instant>,
+    /// The Shadow theme's picture: the path it was loaded from, and the texture, None if unreadable.
+    shadow_picture: Option<(String, Option<egui::TextureHandle>)>,
     told_about_tray: bool,
     pub startup_mode: crate::startup::Mode,
     pub downloads: crate::downloads::Store,
@@ -903,6 +913,8 @@ impl App {
             widgets_fed_at: None,
             tray_shown: (None, false),
             quitting: false,
+            shadow_takeover: None,
+            shadow_picture: None,
             told_about_tray: false,
             startup_mode: crate::startup::Mode::Off,
             downloads: crate::downloads::Store::open(&places_for_downloads),
@@ -3272,6 +3284,32 @@ impl App {
                 self.quitting = true;
                 self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
             }
+            // "sh@d0w": the secret theme, saved at once and there when Noctorium opens again, under five seconds of
+            // takeover, after which the window closes.
+            Action::Code(settings::ExperimentalCode::Shadow) => {
+                self.settings.theme = shadow::KEY.to_string();
+                self.save_settings();
+                self.shadow_takeover = Some(Instant::now());
+            }
+            Action::SetShadowPicture(path) => {
+                let Some(folder) = self.places.root.clone() else { return };
+                if path.trim().is_empty() {
+                    shadow::forget(&folder);
+                    self.settings.looks.shadow_picture.clear();
+                    self.inputs.shadow_answer = None;
+                } else {
+                    match shadow::keep(std::path::Path::new(path.trim().trim_matches('"')), &folder) {
+                        Ok(kept) => {
+                            self.settings.looks.shadow_picture = kept.to_string_lossy().into_owned();
+                            self.inputs.shadow_path.clear();
+                            self.inputs.shadow_answer = None;
+                        }
+                        Err(why) => self.inputs.shadow_answer = Some(why),
+                    }
+                }
+                self.shadow_picture = None;
+                self.save_settings();
+            }
             Action::HideCloseMatch(key) => {
                 self.closed_close_matches.insert(key);
             }
@@ -4253,6 +4291,21 @@ impl eframe::App for App {
         }
         let mut inputs = std::mem::take(&mut self.inputs);
         widgets::paint_background(ctx, &self.palette, self.glow_colour.zip(target.map(|(_, g)| g)));
+        if self.settings.theme == shadow::KEY {
+            let wanted = &self.settings.looks.shadow_picture;
+            if self.shadow_picture.as_ref().is_none_or(|(path, _)| path != wanted) {
+                self.shadow_picture = Some((wanted.clone(), shadow::load(ctx, wanted)));
+            }
+            shadow::paint_backdrop(ctx, self.shadow_picture.as_ref().and_then(|(_, t)| t.as_ref()));
+        }
+        if let Some(started) = self.shadow_takeover {
+            shadow::paint_takeover(ctx, started);
+            if started.elapsed() >= shadow::TAKEOVER {
+                self.shadow_takeover = None;
+                self.quitting = true;
+                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
+        }
         pages::skin_title_bar(self, ctx);
         player::player_bar(self, ctx, &mut inputs, &mut actions);
         pages::rail(self, ctx, &mut actions);

@@ -9,6 +9,7 @@
 //! their own and change what the pages after them show: `theme:<KEY>` switches the theme, `play` plays the
 //! search's first song, and `lyrics` opens the lyrics. `looks:<name>=<VALUE>;...` changes Settings ›
 //! Personalisation by the names it is saved under, `looks:nowPlaying=STAGE;cover=RECORD`, and
+//! `code:<typed>` enters a code in Settings › Experimental, `code:sh@d0w`, and
 //! `settings:<words>` opens Settings searched for those words, and `settingspage:<Name>` one page of
 //! Settings by its name in the code, `settingspage:Theme`. Each waits `NOCTORIUM_CAPTURE_WAIT` seconds (eight by default) for the
 //! services to answer and the covers to arrive.
@@ -162,6 +163,14 @@ fn open(step: &str, app: &App, actions: &mut Vec<Action>) {
     if step == "edit" {
         if let Some(track) = app.queue.current() {
             actions.push(Action::EditDetails(track.clone(), track.title.clone(), track.artist_line()));
+        }
+        return;
+    }
+    // A code typed in Settings › Experimental, looked up as typing it there would: `code:sh@d0w`.
+    if let Some(typed) = step.strip_prefix("code:") {
+        match super::settings::ExperimentalCode::find(typed) {
+            Some(code) => actions.push(Action::Code(code)),
+            None => println!("  no code {typed}"),
         }
         return;
     }

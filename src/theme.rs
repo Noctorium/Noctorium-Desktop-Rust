@@ -103,7 +103,20 @@ pub const PRESETS: &[ThemePreset] = &[
     plain("WINDOWS_98", "98", "Windows", c(0xC0C0C0, 0xB4B4B4, 0xFFFFFF, 0x000000, 0x3A3A3A, 0x000080, true)),
     plain("WINDOWS_98_NOCTORIUM", "Noctorium 98", "Windows", c(0x231B2E, 0x1B1524, 0x0B0810, 0xF8F4FF, 0xCFC5DA, 0xB47CFF, false)),
     plain("WINDOWS_XP", "XP", "Windows", c(0xECE9D8, 0xD6DFF7, 0xFFFFFF, 0x000000, 0x4D4D4D, 0x245EDC, true)),
+    // A secret, in no list of themes: reached only by the code "sh@d0w" in Settings › Experimental. See gui/shadow.rs.
+    ThemePreset {
+        key: "SHADOW",
+        name: "Shadow",
+        family: "Secret",
+        colours: c(0x070506, 0x0E0A0B, 0x181012, 0xF5EFEF, 0xB3A2A4, 0xE3262F, false),
+        glow: Some(Glow { colour: 0xC8102E, follows_artwork: false, placement: GlowPlacement::Top, strength: 0.24 }),
+    },
 ];
+
+/// Whether the theme saved as `key` is left out of the Theme page: the secret one, which only a code reaches.
+pub fn hidden(key: &str) -> bool {
+    key == "SHADOW"
+}
 
 /// The theme made of the listener's own colours, saved as `CUSTOM` as Kotlin saves it.
 pub const CUSTOM: &str = "CUSTOM";

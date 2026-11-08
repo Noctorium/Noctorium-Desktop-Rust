@@ -951,7 +951,7 @@ fn theme_page(ui: &mut Ui, app: &App, actions: &mut Vec<Action>) {
             _ => "Editors and terminals",
         };
         let yours = theme::ThemePreset { key: theme::CUSTOM, name: "Your own", family: "Yours", colours: app.settings.looks.custom_theme.colours(), glow: None };
-        let all: Vec<&theme::ThemePreset> = PRESETS.iter().chain(std::iter::once(&yours)).collect();
+        let all: Vec<&theme::ThemePreset> = PRESETS.iter().filter(|p| !theme::hidden(p.key)).chain(std::iter::once(&yours)).collect();
         let mut families: Vec<&str> = Vec::new();
         for preset in all.iter().copied() {
             if !families.contains(&family_of(preset)) {
@@ -1767,12 +1767,15 @@ fn noctorium_playlists(ui: &mut Ui, app: &App, inputs: &mut Inputs, actions: &mu
 pub enum ExperimentalCode {
     /// Closes Noctorium, as the tray's Quit does. Nothing actually crashes.
     Crash,
+    /// The secret theme, kept from then on like any, until another is chosen.
+    Shadow,
 }
 
 impl ExperimentalCode {
     pub fn find(typed: &str) -> Option<ExperimentalCode> {
         match typed.trim().to_lowercase().as_str() {
             "crash" => Some(ExperimentalCode::Crash),
+            "sh@d0w" => Some(ExperimentalCode::Shadow),
             _ => None,
         }
     }
@@ -1800,6 +1803,25 @@ fn experimental(ui: &mut Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<A
             ui.label(RichText::new(answer).color(palette.subtext));
         }
     });
+    // Only for whoever has the secret theme on: their own picture behind it.
+    if app.settings.theme == super::shadow::KEY {
+        let picture = &app.settings.looks.shadow_picture;
+        group(ui, app, "Your picture", Some("Put a picture of your own behind this theme: paste where it is on this computer. It is copied into Noctorium's folder and goes nowhere else."), |ui| {
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut inputs.shadow_path).hint_text("Path to a PNG, JPEG or WebP").desired_width(320.0));
+                let label = if picture.is_empty() { "Add a picture" } else { "Change picture" };
+                if primary(ui, &palette, label).clicked() && !inputs.shadow_path.trim().is_empty() {
+                    actions.push(Action::SetShadowPicture(inputs.shadow_path.clone()));
+                }
+                if !picture.is_empty() && ui.button("Remove").clicked() {
+                    actions.push(Action::SetShadowPicture(String::new()));
+                }
+            });
+            if let Some(answer) = &inputs.shadow_answer {
+                ui.label(RichText::new(answer).color(palette.subtext));
+            }
+        });
+    }
 }
 
 #[cfg(test)]
@@ -1812,5 +1834,8 @@ mod tests {
         assert_eq!(ExperimentalCode::find("  CRASH "), Some(ExperimentalCode::Crash));
         assert_eq!(ExperimentalCode::find(""), None);
         assert_eq!(ExperimentalCode::find("crashes"), None);
+        assert_eq!(ExperimentalCode::find("sh@d0w"), Some(ExperimentalCode::Shadow));
+        assert_eq!(ExperimentalCode::find(" SH@D0W "), Some(ExperimentalCode::Shadow));
+        assert_eq!(ExperimentalCode::find("shadow"), None);
     }
 }
