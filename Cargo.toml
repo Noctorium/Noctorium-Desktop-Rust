@@ -1,6 +1,6 @@
 [package]
 name = "noctorium"
-version = "0.24.0"
+version = "0.25.0"
 edition = "2021"
 rust-version = "1.88"
 description = "Noctorium, the music player for YouTube Music and SoundCloud, written in Rust"
