@@ -260,6 +260,8 @@ pub enum Action {
     SetFollowing { video_id: String, channel_id: String, follow: bool },
     RunDiagnostics,
     InstallUpdate,
+    /// A code entered in Settings › Experimental.
+    Code(settings::ExperimentalCode),
     /// Hide the close-match note above the lyrics for the song, by its queue key.
     HideCloseMatch(String),
     /// The pointer rests on a song: look it up now, so a click on it plays at once.
@@ -549,6 +551,9 @@ pub struct Inputs {
     pub playlist_folder: Option<String>,
     /// The Google OAuth client's id and secret, while they are being typed.
     pub google_app: Option<(String, String)>,
+    /// What is typed in Settings › Experimental's code box, and what it last said back.
+    pub code: String,
+    pub code_answer: Option<String>,
     /// How much of the history the profile shows; more on asking.
     pub history_shown: usize,
 }
@@ -3262,6 +3267,11 @@ impl App {
                 }
             }
             Action::LookAhead(track) => self.look_ahead(track),
+            // "crash": closes Noctorium as the tray's Quit does. Nothing actually crashes.
+            Action::Code(settings::ExperimentalCode::Crash) => {
+                self.quitting = true;
+                self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+            }
             Action::HideCloseMatch(key) => {
                 self.closed_close_matches.insert(key);
             }

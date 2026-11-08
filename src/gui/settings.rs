@@ -78,11 +78,12 @@ pub enum SettingsPage {
     Downloads,
     PlaybackTools,
     Updates,
+    Experimental,
     Diagnostics,
 }
 
 impl SettingsPage {
-    pub const ALL: [SettingsPage; 28] = [
+    pub const ALL: [SettingsPage; 29] = [
         SettingsPage::Account,
         SettingsPage::Profile,
         SettingsPage::NoctoriumPlaylists,
@@ -110,6 +111,7 @@ impl SettingsPage {
         SettingsPage::Downloads,
         SettingsPage::PlaybackTools,
         SettingsPage::Updates,
+        SettingsPage::Experimental,
         SettingsPage::Diagnostics,
     ];
 
@@ -142,6 +144,7 @@ impl SettingsPage {
             SettingsPage::Downloads => "Saving music",
             SettingsPage::PlaybackTools => "Playback tools",
             SettingsPage::Updates => "Updates",
+            SettingsPage::Experimental => "Experimental",
             SettingsPage::Diagnostics => "Diagnostics",
         }
     }
@@ -154,7 +157,7 @@ impl SettingsPage {
             Sound | PlaybackQueue | Lyrics => Section::Listening,
             YouTube | SoundCloud | Spotify | Bandcamp | Vk | AppleMusic | Deezer | Tidal | Scrobbling | Discord | StreamWidgets => Section::Services,
             Startup | Shortcuts | Downloads | PlaybackTools => Section::Device,
-            Updates | Diagnostics => Section::About,
+            Updates | Experimental | Diagnostics => Section::About,
         }
     }
 
@@ -189,6 +192,7 @@ impl SettingsPage {
             Downloads => "💾",
             PlaybackTools => "🔧",
             Updates => "⬆",
+            Experimental => "🧪",
             Diagnostics => "🩺",
         }
     }
@@ -426,6 +430,7 @@ fn tile_text(app: &App, page: SettingsPage) -> TileText {
                 plain(format!("{} is missing", missing.join(" and ")))
             }
         }
+        SettingsPage::Experimental => plain("Codes, for things that are not settings yet".into()),
         SettingsPage::Updates => match (&app.update_ready, &app.newer) {
             (Some(version), _) => on(format!("{version} is installed: restart to use it"), true),
             (None, Some(newer)) => plain(format!("Noctorium {} is available", newer.version)),
@@ -564,6 +569,7 @@ const INDEX: &[Entry] = &[
     e(P::Downloads, "Saving music", Some("Saving music"), "Songs saved as files: a tagged 320 kbps MP3, or the original audio, and the folder.", "download downloads offline mp3 save file export folder desktop original quality"),
     e(P::PlaybackTools, "Playback tools", Some("Playback tools"), "yt-dlp reads the services; mpv makes the sound.", "yt-dlp ytdlp mpv install update version tools"),
     e(P::Updates, "Updates", Some("Updates"), "Whether a newer Noctorium is out, and installing it by itself.", "update upgrade new version check for updates release auto update automatic updates install restart"),
+    e(P::Experimental, "Codes", Some("Codes"), "Things that are not settings yet: type a code and press Enter.", "experimental code codes easter egg secret cheat"),
     e(P::Updates, "About Noctorium", Some("About Noctorium"), "The version, the licence and the source.", "about version licence license github source credits"),
     e(P::Diagnostics, "Diagnostics", Some("Diagnostics"), "Checks that yt-dlp, mpv and storage are working, for when something is not.", "troubleshoot problems debug logs help not working broken test"),
 ];
@@ -730,6 +736,7 @@ pub fn page(ui: &mut Ui, app: &App, page: SettingsPage, inputs: &mut Inputs, act
             pages::tool_row(ui, app, Tool::Mpv, &app.mpv, actions);
         }),
         SettingsPage::Updates => updates(ui, app, actions),
+        SettingsPage::Experimental => experimental(ui, app, inputs, actions),
         SettingsPage::Diagnostics => group(
             ui,
             app,
@@ -1749,4 +1756,61 @@ fn noctorium_playlists(ui: &mut Ui, app: &App, inputs: &mut Inputs, actions: &mu
             }
         }
     });
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// About › Experimental
+
+/// The codes there are, by what is typed for them: the Kotlin players' `ExperimentalCode`. Typed in any case, with
+/// spaces either side or not.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExperimentalCode {
+    /// Closes Noctorium, as the tray's Quit does. Nothing actually crashes.
+    Crash,
+}
+
+impl ExperimentalCode {
+    pub fn find(typed: &str) -> Option<ExperimentalCode> {
+        match typed.trim().to_lowercase().as_str() {
+            "crash" => Some(ExperimentalCode::Crash),
+            _ => None,
+        }
+    }
+}
+
+/// A box for codes, which do things not yet worth a setting of their own -- and, for now, one easter egg.
+fn experimental(ui: &mut Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<Action>) {
+    let palette = app.palette;
+    group(ui, app, "Codes", Some("Things that are not settings yet. Type a code and press Enter."), |ui| {
+        ui.horizontal(|ui| {
+            let field = ui.add(egui::TextEdit::singleline(&mut inputs.code).hint_text("Code").desired_width(260.0));
+            let enter = field.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+            if (primary(ui, &palette, "Enter").clicked() || enter) && !inputs.code.trim().is_empty() {
+                inputs.code_answer = match ExperimentalCode::find(&inputs.code) {
+                    Some(code) => {
+                        actions.push(Action::Code(code));
+                        None
+                    }
+                    None => Some("Nothing happens. Not yet, anyway.".into()),
+                };
+                inputs.code.clear();
+            }
+        });
+        if let Some(answer) = &inputs.code_answer {
+            ui.label(RichText::new(answer).color(palette.subtext));
+        }
+    });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ExperimentalCode;
+
+    #[test]
+    fn a_code_is_found_however_it_is_typed_and_anything_else_is_none() {
+        assert_eq!(ExperimentalCode::find("crash"), Some(ExperimentalCode::Crash));
+        assert_eq!(ExperimentalCode::find("  CRASH "), Some(ExperimentalCode::Crash));
+        assert_eq!(ExperimentalCode::find(""), None);
+        assert_eq!(ExperimentalCode::find("crashes"), None);
+    }
 }
