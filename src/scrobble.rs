@@ -201,6 +201,7 @@ pub fn send(site: Site, account: &Account, track: &ScrobbleTrack, started_at: Op
                 ProviderType::Deezer => "deezer.com",
                 ProviderType::Tidal => "tidal.com",
                 ProviderType::Local => "local",
+                ProviderType::Radio => "radio",
             };
             let mut metadata = serde_json::json!({
                 "artist_name": track.artist,

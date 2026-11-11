@@ -260,8 +260,14 @@ pub(super) fn strip(
 
 fn search(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<Action>) {
     let palette = app.palette;
-    ui.label(RichText::new("Search").font(theme::bold(28.0)).color(palette.text));
+    // Music or Radio beside the heading, above the box: what the page searches, with the box left to be a box.
+    ui.horizontal(|ui| {
+        ui.label(RichText::new("Search").font(theme::bold(28.0)).color(palette.text));
+        ui.add_space(10.0);
+        super::radio::kind_picker(ui, app, false, actions);
+    });
     ui.add_space(10.0);
+    let radio = app.search_kind == super::SearchKind::Radio;
     let field = egui::Frame::new()
         .fill(palette.card)
         .stroke(Stroke::new(1.0_f32, palette.line))
@@ -270,9 +276,14 @@ fn search(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<A
         .show(ui, |ui| {
             ui.horizontal(|ui| {
                 ui.label(RichText::new("🔍").color(palette.subtext));
+                let hint = if radio {
+                    "A station, a city or a kind of music: “jazz”, “BBC”, “Tokyo”"
+                } else {
+                    "Songs, artists, or a YouTube or SoundCloud link — !sc, !ytm, !yt, !all"
+                };
                 let response = ui.add(
                     egui::TextEdit::singleline(&mut inputs.search)
-                        .hint_text("Songs, artists, or a YouTube or SoundCloud link — !sc, !ytm, !yt, !all")
+                        .hint_text(hint)
                         .frame(false)
                         .font(theme::regular(16.0))
                         .desired_width(f32::INFINITY),
@@ -290,6 +301,13 @@ fn search(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<A
         actions.push(Action::Search);
     }
     ui.add_space(8.0);
+    if radio {
+        // A country to narrow the stations to, where the service chips would be.
+        super::radio::country_picker(ui, app, inputs, actions);
+        ui.add_space(14.0);
+        super::radio::results(ui, app, actions);
+        return;
+    }
     let typed = bangs::parse(&inputs.search);
     ui.horizontal_wrapped(|ui| {
         for mode in SearchMode::OFFERED {
@@ -942,6 +960,7 @@ pub(super) fn discord_settings(ui: &mut egui::Ui, app: &App, actions: &mut Vec<A
 pub fn quick_search(app: &App, ctx: &egui::Context, quick: Option<&mut super::QuickSearch>, actions: &mut Vec<Action>) {
     let Some(quick) = quick else { return };
     let palette = app.palette;
+    let radio = app.search_kind == super::SearchKind::Radio;
     let results: Vec<Track> = match &quick.results {
         Some(Ok(tracks)) => tracks.clone(),
         _ => vec![],
@@ -976,13 +995,20 @@ pub fn quick_search(app: &App, ctx: &egui::Context, quick: Option<&mut super::Qu
                 .shadow(egui::Shadow { offset: [0, 8], blur: 32, spread: 0, color: egui::Color32::from_black_alpha(140) })
                 .show(ui, |ui| {
                     ui.set_width(560.0);
-                    let field = ui.add(
-                        egui::TextEdit::singleline(&mut quick.text)
-                            .hint_text("Search — !sc, !ytm, !yt at the start or the end")
-                            .font(theme::regular(17.0))
-                            .frame(false)
-                            .desired_width(f32::INFINITY),
-                    );
+                    // Music or Radio, small, above the line you type on -- Ctrl+F again flips it.
+                    super::radio::kind_picker(ui, app, true, actions);
+                    ui.add_space(4.0);
+                    let field = ui
+                        .horizontal(|ui| {
+                            ui.add(
+                                egui::TextEdit::singleline(&mut quick.text)
+                                    .hint_text(if radio { "A station, a city, or “jazz”" } else { "Search — !sc, !ytm, !yt at the start or the end" })
+                                    .font(theme::regular(17.0))
+                                    .frame(false)
+                                    .desired_width(f32::INFINITY),
+                            )
+                        })
+                        .inner;
                     if quick.focus {
                         field.request_focus();
                         quick.focus = false;
@@ -990,22 +1016,36 @@ pub fn quick_search(app: &App, ctx: &egui::Context, quick: Option<&mut super::Qu
                     if field.changed() {
                         quick.typed_at = std::time::Instant::now();
                     }
+                    let play = |index: usize, actions: &mut Vec<Action>| {
+                        actions.push(if radio {
+                            Action::PlayStation(results[index].clone())
+                        } else {
+                            Action::PlayList { tracks: results.clone(), index }
+                        });
+                        actions.push(Action::CloseQuickSearch);
+                    };
                     if enter {
-                        if let Some(track) = results.get(quick.selected) {
-                            actions.push(Action::PlayList { tracks: results.clone(), index: quick.selected });
-                            actions.push(Action::CloseQuickSearch);
-                            let _ = track;
-                        } else if !quick.text.trim().is_empty() {
+                        if quick.selected < results.len() {
+                            play(quick.selected, actions);
+                        } else if radio || !quick.text.trim().is_empty() {
                             actions.push(Action::QuickSearchAll(quick.text.clone()));
                         }
                     }
-                    if quick.text.trim().is_empty() {
+                    let blank = quick.text.trim().is_empty();
+                    let footer = super::radio::quick_footer(app.search_kind, blank);
+                    if blank && !radio {
+                        ui.add_space(6.0);
+                        ui.label(RichText::new(footer).font(theme::regular(11.5)).color(palette.faint));
                         return;
                     }
                     ui.separator();
                     match &quick.results {
+                        None if radio => widgets::loading(ui, &palette, "Tuning in to the world's stations…"),
                         None => widgets::loading(ui, &palette, "Searching…"),
                         Some(Err(why)) => notice(ui, &palette, why, true),
+                        Some(Ok(tracks)) if tracks.is_empty() && radio => {
+                            ui.label(RichText::new(format!("No station called “{}”. Try a city, or a kind of music such as “jazz”.", quick.text.trim())).color(palette.faint));
+                        }
                         Some(Ok(tracks)) if tracks.is_empty() => {
                             ui.label(RichText::new("Nothing found.").color(palette.faint));
                         }
@@ -1013,7 +1053,12 @@ pub fn quick_search(app: &App, ctx: &egui::Context, quick: Option<&mut super::Qu
                             for (index, track) in results.iter().enumerate() {
                                 let selected = index == quick.selected;
                                 let row = ui.horizontal(|ui| {
-                                    widgets::artwork(ui, &palette, track.artwork_url.as_deref(), 36.0, 5);
+                                    if radio {
+                                        let (rect, _) = ui.allocate_exact_size(vec2(36.0, 36.0), egui::Sense::hover());
+                                        super::radio::logo(ui, &palette, track.artwork_url.as_deref(), rect);
+                                    } else {
+                                        widgets::artwork(ui, &palette, track.artwork_url.as_deref(), 36.0, 5);
+                                    }
                                     ui.vertical(|ui| {
                                         let colour = if selected { palette.accent } else { palette.text };
                                         ui.add(egui::Label::new(RichText::new(&track.title).font(theme::bold(14.0)).color(colour)).truncate());
@@ -1025,16 +1070,16 @@ pub fn quick_search(app: &App, ctx: &egui::Context, quick: Option<&mut super::Qu
                                     ui.painter().rect_filled(row.response.rect.expand(2.0), egui::CornerRadius::same(theme::corner(6)), palette.wash(0.08));
                                 }
                                 if response.clicked() {
-                                    actions.push(Action::PlayList { tracks: results.clone(), index });
-                                    actions.push(Action::CloseQuickSearch);
+                                    play(index, actions);
                                 }
                             }
                         }
                     }
                     ui.add_space(4.0);
-                    if ui.link("All results on the search page").clicked() {
+                    if ui.link(if radio { "All stations on the search page" } else { "All results on the search page" }).clicked() {
                         actions.push(Action::QuickSearchAll(quick.text.clone()));
                     }
+                    ui.label(RichText::new(footer).font(theme::regular(11.5)).color(palette.faint));
                 });
         });
 }

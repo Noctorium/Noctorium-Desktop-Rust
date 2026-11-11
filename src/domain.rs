@@ -20,6 +20,9 @@ pub enum ProviderType {
     Deezer,
     Tidal,
     Local,
+    /// Internet radio: a station from anywhere in the world, from Radio Browser's open list of them -- see
+    /// [`crate::radio`]. Its stream plays as it is, with no end, nothing to like and nothing to download.
+    Radio,
 }
 
 impl ProviderType {
@@ -35,6 +38,7 @@ impl ProviderType {
             ProviderType::Deezer => "Deezer",
             ProviderType::Tidal => "Tidal",
             ProviderType::Local => "Local",
+            ProviderType::Radio => "Radio",
         }
     }
 
@@ -51,6 +55,7 @@ impl ProviderType {
             ProviderType::Deezer => "DEEZER",
             ProviderType::Tidal => "TIDAL",
             ProviderType::Local => "LOCAL",
+            ProviderType::Radio => "RADIO",
         }
     }
 
@@ -67,6 +72,7 @@ impl ProviderType {
             ProviderType::Deezer => "DZ",
             ProviderType::Tidal => "TD",
             ProviderType::Local => "PC",
+            ProviderType::Radio => "FM",
         }
     }
 
@@ -82,6 +88,7 @@ impl ProviderType {
             ProviderType::Deezer => [0xA2, 0x38, 0xFF],
             ProviderType::Tidal => [0xCC, 0xCC, 0xCC],
             ProviderType::Local => [0x9E, 0x9E, 0x9E],
+            ProviderType::Radio => [0x0F, 0x8A, 0x7E],
         }
     }
 
@@ -93,12 +100,17 @@ impl ProviderType {
 
     /// Whether this player can play the service's songs: itself through yt-dlp, or by matching them.
     pub fn plays_here(self) -> bool {
-        self.playable_here() || self.is_reference() || matches!(self, ProviderType::Bandcamp | ProviderType::Vk)
+        self.playable_here() || self.is_reference() || matches!(self, ProviderType::Bandcamp | ProviderType::Vk | ProviderType::Radio)
     }
 
     /// Whether a song from the service can be downloaded or saved: its audio is read by yt-dlp.
     pub fn downloadable(self) -> bool {
         self.playable_here() || self == ProviderType::Bandcamp
+    }
+
+    /// Whether this is a radio station: a stream without an end, played by mpv as it is.
+    pub fn is_radio(self) -> bool {
+        self == ProviderType::Radio
     }
 
     /// Whether this player can play the service's songs itself: through yt-dlp, which reads these three.
@@ -303,6 +315,19 @@ mod tests {
         let written = serde_json::to_string(&track).unwrap();
         assert!(written.contains("\"sourceUrl\""));
         assert!(!written.contains("artworkUrl"), "absent values are left out: {written}");
+    }
+
+    #[test]
+    fn reads_a_station_from_the_kotlin_players() {
+        let json = r#"[{"provider":"RADIO","id":"9608b51d","title":"Radio Paradise",
+            "artists":[{"id":"radio-country:US","name":"California, The United States Of America · rock","provider":"RADIO"}],
+            "artworkUrl":"https://radioparadise.com/favicon.ico","sourceUrl":"http://stream.radioparadise.com/aac-320"}]"#;
+        let tracks = decode_tracks(json);
+        assert_eq!(tracks.len(), 1);
+        assert_eq!(tracks[0].provider, ProviderType::Radio);
+        assert_eq!(tracks[0].queue_key(), "RADIO:9608b51d");
+        assert!(tracks[0].provider.plays_here() && !tracks[0].provider.playable_here() && !tracks[0].provider.downloadable());
+        assert!(serde_json::to_string(&tracks[0]).unwrap().contains("\"provider\":\"RADIO\""));
     }
 
     #[test]

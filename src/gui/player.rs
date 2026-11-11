@@ -112,7 +112,7 @@ pub fn player_bar(app: &App, ctx: &egui::Context, inputs: &mut Inputs, actions: 
                         let controls = Rect::from_min_max(pos2(track.right(), full.top()), pos2(tools_rect.left(), full.bottom()));
                         transport(ui, app, controls, true, 36.0, actions);
                     }
-                    let time = format!("{} / {}", format_duration(bar.position), if bar.duration > 0 { format_duration(bar.duration) } else { "–:––".into() });
+                    let time = bar.clock("–:––");
                     ui.painter().text(pos2(tools_rect.left() - 6.0, full.center().y), Align2::RIGHT_CENTER, time, theme::regular(11.5), palette.faint);
                 }
                 PlayerBarStyle::Island => island(ui, app, full, &bar, actions),
@@ -136,15 +136,40 @@ pub fn player_bar(app: &App, ctx: &egui::Context, inputs: &mut Inputs, actions: 
 struct Bar {
     position: i64,
     duration: i64,
+    /// A radio station: a stream with no end to count towards.
+    live: bool,
 }
 
 impl Bar {
     fn of(app: &App) -> Bar {
         let state = app.engine.state();
         let shown = app.loaded.as_ref().or(app.resolving.as_ref()).or(app.queue.current());
-        let duration = if state.duration_ms > 0 { state.duration_ms } else { shown.and_then(|t| t.duration_ms).unwrap_or(0) };
-        Bar { position: if app.loaded.is_some() { state.position_ms } else { 0 }, duration }
+        let live = shown.is_some_and(|t| t.provider.is_radio());
+        let duration = if live {
+            0
+        } else if state.duration_ms > 0 {
+            state.duration_ms
+        } else {
+            shown.and_then(|t| t.duration_ms).unwrap_or(0)
+        };
+        Bar { position: if app.loaded.is_some() { state.position_ms } else { 0 }, duration, live }
     }
+
+    /// "1:23 / 4:00"; for a station, which has no end to count towards, how long it has been on.
+    fn clock(&self, unknown: &str) -> String {
+        if self.live {
+            return elapsed_over_total(self.position, 0, true, unknown);
+        }
+        elapsed_over_total(self.position, self.duration, false, unknown)
+    }
+}
+
+/// "1:23 / 4:00", "1:23 / –:––" while the length is not known, and "LIVE · 1:23" for a station.
+pub(super) fn elapsed_over_total(position: i64, duration: i64, live: bool, unknown: &str) -> String {
+    if live {
+        return format!("LIVE · {}", format_duration(position));
+    }
+    format!("{} / {}", format_duration(position), if duration > 0 { format_duration(duration) } else { unknown.into() })
 }
 
 /// The track on the left, the controls in the middle, the tools on the right with room for every one shown.
@@ -193,7 +218,8 @@ fn track_block(ui: &mut egui::Ui, app: &App, rect: Rect, cover: f32, title: f32,
         ui.add(egui::Label::new(RichText::new(&track.title).font(theme::bold(title)).color(palette.text)).truncate());
         ui.add(egui::Label::new(RichText::new(track.artist_line()).font(theme::regular(title - 2.0)).color(palette.subtext)).truncate());
     });
-    if heart && app.settings.looks.shows(PlayerButton::Like) {
+    // A station has nothing to like: no heart beside it.
+    if heart && !track.provider.is_radio() && app.settings.looks.shows(PlayerButton::Like) {
         let liked = app.library.is_liked(track);
         let icon = if liked { Icon::HeartFilled } else { Icon::Heart };
         if icons::icon_button(&mut row, &palette, icon, 32.0, liked, if liked { "Remove from Liked songs" } else { "Add to Liked songs" }).clicked() {
@@ -435,7 +461,7 @@ fn stereo_display(ui: &mut egui::Ui, app: &App, rect: Rect, bar: &Bar, actions: 
     };
     clip.text(pos2(rect.left() + 12.0 + offset, rect.top() + 10.0), Align2::LEFT_TOP, &title, mono(16.0), glow);
     clip.text(pos2(rect.left() + 12.0, rect.top() + 32.0), Align2::LEFT_TOP, &artist, mono(12.0), glow.gamma_multiply(0.7));
-    let time = format!("{} / {}", format_duration(bar.position), if bar.duration > 0 { format_duration(bar.duration) } else { "-:--".into() });
+    let time = bar.clock("-:--");
     clip.text(pos2(rect.right() - 12.0, rect.top() + 32.0), Align2::RIGHT_TOP, time, mono(12.0), glow.gamma_multiply(0.7));
     let foot = Rect::from_min_max(pos2(rect.left() + 12.0, rect.bottom() - 12.0), pos2(rect.right() - 12.0, rect.bottom() - 9.0));
     hairline(ui, app, foot, bar, actions);
@@ -655,6 +681,9 @@ pub(super) fn seek_bar(
     actions: &mut Vec<Action>,
 ) {
     let palette = app.palette;
+    // A station has no end, so nothing to seek through.
+    let live = app.loaded.as_ref().or(app.resolving.as_ref()).or(app.queue.current()).is_some_and(|t| t.provider.is_radio());
+    let duration = if live { 0 } else { duration };
     let track = Rect::from_min_max(pos2(bar.left(), bar.center().y - 2.0), pos2(bar.right(), bar.center().y + 2.0));
     let response = ui.interact(bar, ui.id().with("seek"), Sense::click_and_drag());
     let fraction_at = |x: f32| ((x - track.left()) / track.width()).clamp(0.0, 1.0);
@@ -686,6 +715,7 @@ pub(super) fn seek_bar(
         pos2(bar.right() + 10.0, bar.center().y),
         Align2::LEFT_CENTER,
         match (duration > 0, app.settings.looks.time_display) {
+            _ if live => "LIVE".into(),
             (false, _) => "–:––".into(),
             (true, crate::looks::TimeDisplay::Total) => format_duration(duration),
             (true, crate::looks::TimeDisplay::Remaining) => format!("-{}", format_duration((duration - shown).max(0))),
@@ -1072,4 +1102,16 @@ fn sleep_button(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_station_reads_live() {
+        assert_eq!(elapsed_over_total(83_000, 0, true, "–:––"), "LIVE · 1:23");
+        assert_eq!(elapsed_over_total(83_000, 240_000, false, "–:––"), "1:23 / 4:00");
+        assert_eq!(elapsed_over_total(83_000, 0, false, "–:––"), "1:23 / –:––");
+    }
 }

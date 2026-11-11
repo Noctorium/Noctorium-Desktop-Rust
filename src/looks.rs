@@ -503,7 +503,7 @@ impl HomePart {
             P::Deezer => HomePart::Deezer,
             P::Tidal => HomePart::Tidal,
             P::AppleMusic => HomePart::AppleMusic,
-            P::Local => return None,
+            P::Local | P::Radio => return None,
         })
     }
 }

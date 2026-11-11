@@ -9,6 +9,7 @@ mod capture;
 mod icons;
 mod pages;
 mod player;
+mod radio;
 mod settings;
 mod shadow;
 mod widgets;
@@ -18,6 +19,7 @@ use crate::domain::{LocalPlaylist, Playlist, ProviderType, Track};
 use crate::lyrics::{self, Lyrics};
 use crate::mpv::{Engine, EngineEvent, Levels, Status};
 use crate::queue::{Queue, RepeatMode};
+pub use radio::SearchKind;
 use crate::store::{self, Library, Places, Settings};
 use crate::theme::{self, Palette};
 use crate::tools::{self, Tool};
@@ -288,6 +290,16 @@ pub enum Action {
     YouTubeEdit { id: String, url: String, edit: crate::accounts::PlaylistEdit },
     YouTubeRemove { id: String, url: String, track: Track },
     YouTubeDelete { id: String, url: String },
+    /// Music or Radio, from the search box's own menu. See [`SearchKind`].
+    SetSearchKind(SearchKind),
+    /// Music to Radio and back: what Ctrl+F does a second time, in the quick search bar.
+    ToggleSearchKind,
+    /// The country radio is looked for in, by its ISO code; None for the whole world.
+    SetRadioCountry(Option<String>),
+    /// A station picked from the radio search: played on its own, with nothing queued after a stream that does not end.
+    PlayStation(Track),
+    /// Holds a menu open, or none, for the window's pictures.
+    CaptureMenu(Option<String>),
 }
 
 /// A Spotify device: its id, its name, and whether it is the one playing.
@@ -376,6 +388,8 @@ enum Event {
     Remote { url: String, result: Result<Playlist, String> },
     Link { result: Result<Track, String> },
     Radio { seed: String, result: Result<Vec<Track>, String> },
+    Stations { id: u64, result: Result<Vec<Track>, String> },
+    RadioCountries(Result<Vec<crate::radio::RadioCountry>, String>),
     Lyrics { key: String, result: Result<Option<Lyrics>, String> },
     Enriched(Track),
     ArtworkColour { url: String, colour: Option<Color32> },
@@ -509,6 +523,16 @@ pub struct HomeRow {
 /// One service's answer to a search: None while it is still being asked.
 pub type ProviderResults = (ProviderType, Option<Result<Vec<Track>, String>>);
 
+/// The radio search: the words it was for, and the stations found, most listened-to first.
+#[derive(Default)]
+pub struct RadioSearch {
+    pub id: u64,
+    pub query: String,
+    pub loading: bool,
+    pub stations: Vec<Track>,
+    pub error: Option<String>,
+}
+
 #[derive(Default)]
 pub struct SearchState {
     pub id: u64,
@@ -538,6 +562,8 @@ pub struct Inputs {
     pub account_new: bool,
     pub search: String,
     pub focus_search: bool,
+    /// What is typed in the radio country picker's box.
+    pub country_filter: String,
     pub new_playlist: String,
     pub follow_link: String,
     pub renaming: Option<(String, String)>,
@@ -591,6 +617,18 @@ pub struct App {
     history: Vec<Page>,
     inputs: Inputs,
     pub search: SearchState,
+    /// Songs or radio stations: Music unless the listener picks Radio, and Music again each time Noctorium
+    /// starts -- a search box that had quietly stayed on radio would read as every service having gone quiet.
+    pub search_kind: SearchKind,
+    radio_browser: crate::radio::RadioBrowser,
+    /// The country radio stations are looked for in, as an ISO code; None for the whole world.
+    pub radio_country: Option<String>,
+    /// Every country with stations, for the country picker; empty until Radio is first chosen.
+    pub radio_countries: Vec<crate::radio::RadioCountry>,
+    /// What the radio search found.
+    pub radio: RadioSearch,
+    /// A menu held open for the window's pictures, by its name: "kind", "quickkind" or "country".
+    pub capture_menu: Option<String>,
     next_id: u64,
     pub home: Vec<Option<HomeRow>>,
     home_id: u64,
@@ -784,6 +822,8 @@ struct Listening {
 pub struct QuickSearch {
     pub text: String,
     pub searched: String,
+    /// The kind the words in `searched` were searched as; None before the first search.
+    pub searched_kind: Option<SearchKind>,
     pub id: u64,
     pub typed_at: Instant,
     pub results: Option<Result<Vec<Track>, String>>,
@@ -850,6 +890,12 @@ impl App {
             history: Vec::new(),
             inputs: Inputs::default(),
             search: SearchState::default(),
+            search_kind: SearchKind::Music,
+            radio_browser: crate::radio::RadioBrowser::default(),
+            radio_country: None,
+            radio_countries: Vec::new(),
+            radio: RadioSearch::default(),
+            capture_menu: None,
             next_id: 0,
             home: Vec::new(),
             home_id: 0,
@@ -1128,6 +1174,11 @@ impl App {
 
     fn run_search(&mut self) {
         let text = self.inputs.search.trim().to_string();
+        if self.search_kind == SearchKind::Radio {
+            self.search_radio(text);
+            self.open(Page::Search);
+            return;
+        }
         if text.is_empty() {
             return;
         }
@@ -1174,6 +1225,39 @@ impl App {
             self.spawn(move || Event::Search { id, provider, result: crate::services::search(&backend, provider, &query, 20) });
         }
         self.open(Page::Search);
+    }
+
+    /// Radio stations for what was typed, in the country chosen. Nothing typed is still a search: the country's --
+    /// or the world's -- most listened-to stations, so Radio is something to browse as well as to look things up in.
+    /// Bangs belong to the music services and mean nothing here; they are searched as the words they are.
+    fn search_radio(&mut self, text: String) {
+        let id = self.fresh_id();
+        self.radio = RadioSearch { id, query: text.clone(), loading: true, stations: std::mem::take(&mut self.radio.stations), error: None };
+        let (radio, country) = (self.radio_browser.clone(), self.radio_country.clone());
+        self.spawn(move || Event::Stations { id, result: radio.search(&text, country.as_deref(), 80) });
+    }
+
+    /// Music or Radio. The words typed stay, and are searched again as the other kind; radio's countries are
+    /// fetched the first time Radio is chosen.
+    fn set_search_kind(&mut self, kind: SearchKind) {
+        if self.search_kind == kind {
+            return;
+        }
+        self.search_kind = kind;
+        if kind == SearchKind::Radio && self.radio_countries.is_empty() {
+            let radio = self.radio_browser.clone();
+            self.spawn(move || Event::RadioCountries(radio.countries()));
+        }
+        if let Some(quick) = self.quick.as_mut() {
+            // The bar's words, searched as the other kind, at once.
+            quick.results = None;
+            quick.selected = 0;
+            quick.typed_at = Instant::now() - Duration::from_secs(1);
+            return;
+        }
+        if kind == SearchKind::Radio || !self.inputs.search.trim().is_empty() {
+            self.run_search();
+        }
     }
 
     fn open_link(&mut self, url: String) {
@@ -1325,7 +1409,7 @@ impl App {
                 started_at: store::now_seconds(),
                 ..Listening::default()
             };
-            if let (Some(track), false) = (self.loaded.clone(), self.scrobblers.is_empty()) {
+            if let (Some(track), false) = (self.loaded.clone().filter(|t| !t.provider.is_radio()), self.scrobblers.is_empty()) {
                 let scrobble = crate::scrobble::ScrobbleTrack::from(&track, 0);
                 for site in self.scrobblers.keys().copied().collect::<Vec<_>>() {
                     self.send_scrobble(site, scrobble.clone(), None);
@@ -1351,7 +1435,8 @@ impl App {
             self.listening.track = self.loaded.clone();
         }
         let due = crate::scrobble::threshold_ms(duration).is_some_and(|t| self.listening.heard_ms >= t);
-        if due && !self.listening.scrobbled && !self.scrobblers.is_empty() {
+        let station = self.loaded.as_ref().is_some_and(|t| t.provider.is_radio());
+        if due && !station && !self.listening.scrobbled && !self.scrobblers.is_empty() {
             self.listening.scrobbled = true;
             if let Some(track) = self.loaded.clone() {
                 let scrobble = crate::scrobble::ScrobbleTrack::from(&track, duration);
@@ -1494,16 +1579,28 @@ impl App {
     /// The quick search bar searches once typing has paused for a moment.
     fn run_quick_search(&mut self) {
         let mode = self.settings.search_mode;
+        let kind = self.search_kind;
         let Some(quick) = self.quick.as_mut() else { return };
         let text = quick.text.trim().to_string();
-        if text.is_empty() || text == quick.searched || quick.typed_at.elapsed() < Duration::from_millis(400) {
+        if (text == quick.searched && quick.searched_kind == Some(kind)) || quick.typed_at.elapsed() < Duration::from_millis(400) {
             return;
         }
         quick.searched = text.clone();
+        quick.searched_kind = Some(kind);
         quick.results = None;
+        if text.is_empty() && kind == SearchKind::Music {
+            return;
+        }
         self.next_id += 1;
         let id = self.next_id;
         quick.id = id;
+        if kind == SearchKind::Radio {
+            // Radio with nothing typed is still a list: the most listened-to stations, so Ctrl+F twice is
+            // something to pick from.
+            let (radio, country) = (self.radio_browser.clone(), self.radio_country.clone());
+            self.spawn(move || Event::QuickResults { id, result: radio.search(&text, country.as_deref(), 7) });
+            return;
+        }
         let parsed = bangs::parse(&text);
         let chosen = parsed.mode().filter(|m| m.offered_here()).unwrap_or(mode);
         let provider = crate::services::provider_for(chosen).first().copied().unwrap_or(ProviderType::YoutubeMusic);
@@ -1665,6 +1762,19 @@ impl App {
         self.resume_at = 0;
         self.play_request += 1;
         let request = self.play_request;
+        // A station's stream is played as it is: nothing for yt-dlp to look up, and no end to it.
+        if track.provider.is_radio() {
+            self.resolving = None;
+            self.generation = self.engine.play(track.source_url.clone(), None, 0, paused);
+            self.started(track.clone());
+            // Radio Browser orders stations by how often they are played, and asks to be told.
+            let radio = self.radio_browser.clone();
+            self.spawn(move || {
+                radio.played(&track);
+                Event::Quiet
+            });
+            return;
+        }
         // A downloaded song plays from its file: no lookup, and no network.
         if let Some(file) = self.downloads.file_for(&track) {
             self.resolving = None;
@@ -1972,7 +2082,7 @@ impl App {
         if !self.settings.lyrics_open {
             return;
         }
-        let Some(track) = self.queue.current().cloned() else { return };
+        let Some(track) = self.queue.current().cloned().filter(|t| !t.provider.is_radio()) else { return };
         let key = track.queue_key();
         if self.lyrics.contains_key(&key) {
             return;
@@ -2594,6 +2704,25 @@ impl App {
                 Ok(text) => self.toast(text, false),
                 Err(why) => self.toast(why, true),
             },
+            Event::Stations { id, result } => {
+                if id == self.radio.id {
+                    self.radio.loading = false;
+                    match result {
+                        Ok(stations) => {
+                            self.radio.stations = stations;
+                            self.radio.error = None;
+                        }
+                        Err(why) => {
+                            self.radio.stations.clear();
+                            self.radio.error = Some(why);
+                        }
+                    }
+                }
+            }
+            Event::RadioCountries(result) => match result {
+                Ok(countries) => self.radio_countries = countries,
+                Err(why) => eprintln!("Radio countries: {why}"),
+            },
             Event::QuickResults { id, result } => {
                 if let Some(quick) = self.quick.as_mut().filter(|q| q.id == id) {
                     quick.results = Some(result);
@@ -2757,6 +2886,7 @@ impl App {
                 self.toast(format!("{count} songs added to the queue"), false);
                 self.queue_changed();
             }
+            Action::ToggleLike(track) if track.provider.is_radio() => self.toast("Radio stations cannot be liked.", true),
             Action::ToggleLike(track) => {
                 let liked = self.library.toggle_like(&track);
                 store::save_liked(&self.places, &self.library);
@@ -2796,6 +2926,7 @@ impl App {
                     _ => {}
                 }
             }
+            Action::StartRadio(track) if track.provider.is_radio() => self.perform(Action::PlayStation(track)),
             Action::StartRadio(track) => {
                 self.queue.play_queue(vec![track.clone()], 0);
                 self.queue.clear_suggestions();
@@ -3439,6 +3570,7 @@ impl App {
                 self.quick = Some(QuickSearch {
                     text: String::new(),
                     searched: String::new(),
+                    searched_kind: None,
                     id: 0,
                     typed_at: Instant::now(),
                     results: None,
@@ -3847,6 +3979,26 @@ impl App {
                 self.inputs.search = words;
                 self.run_search();
             }
+            Action::SetSearchKind(kind) => self.set_search_kind(kind),
+            Action::CaptureMenu(menu) => self.capture_menu = menu,
+            Action::ToggleSearchKind => self.set_search_kind(self.search_kind.other()),
+            Action::SetRadioCountry(code) => {
+                if self.radio_country != code {
+                    self.radio_country = code;
+                    if let Some(quick) = self.quick.as_mut() {
+                        quick.searched_kind = None;
+                    }
+                    if self.search_kind == SearchKind::Radio {
+                        self.search_radio(self.inputs.search.trim().to_string());
+                    }
+                }
+            }
+            Action::PlayStation(station) => {
+                self.queue.play_queue(vec![station], 0);
+                self.queue.clear_suggestions();
+                self.start_current(0, false);
+                self.queue_changed();
+            }
         }
     }
 
@@ -4126,7 +4278,8 @@ impl App {
             Does::ClearAllButCurrent => Action::QueueClearAllButCurrent,
             Does::QuickSearch => {
                 if self.quick.is_some() {
-                    Action::CloseQuickSearch
+                    // Pressed again in the bar: Music to Radio and back, as the menu at the start of the bar does.
+                    Action::ToggleSearchKind
                 } else {
                     Action::OpenQuickSearch
                 }

@@ -13,6 +13,11 @@
 //! `settings:<words>` opens Settings searched for those words, and `settingspage:<Name>` one page of
 //! Settings by its name in the code, `settingspage:Theme`. Each waits `NOCTORIUM_CAPTURE_WAIT` seconds (eight by default) for the
 //! services to answer and the covers to arrive.
+//!
+//! Radio has steps of its own that take no picture: `radio` and `music` choose the search's kind, `ctrlf`
+//! switches it as Ctrl+F in the quick search bar does, `country:<CODE>` picks a country (`country:` for
+//! everywhere), `menu:<name>` holds the `kind`, `quickkind` or `country` menu open for the pictures after it
+//! (`menu:` lets it go), and `playstation` tunes in to the first station found.
 
 use super::{Action, App, Page};
 use eframe::egui;
@@ -91,12 +96,16 @@ impl Capture {
         if step == "play" && (app.search.results.is_empty() || search_pending) {
             return;
         }
+        if step == "playstation" && (app.radio.loading || app.radio.stations.is_empty()) {
+            return;
+        }
         if !self.acted || app_page_differs(app, &step) {
             println!("Step {}: {step}", self.next + 1);
             open(&step, app, actions);
             self.acted = true;
         }
-        if step.starts_with("theme:") || step.starts_with("looks:") || step == "play" || step == "lyrics" || step == "diagnose" || step == "edit" {
+        let radio_step = matches!(step.as_str(), "radio" | "music" | "ctrlf" | "playstation") || step.starts_with("country:") || step.starts_with("menu:");
+        if radio_step || step.starts_with("theme:") || step.starts_with("looks:") || step == "play" || step == "lyrics" || step == "diagnose" || step == "edit" {
             // Nothing to picture; the theme is for the pages after it.
             if self.started.elapsed() > Duration::from_millis(300) {
                 self.next += 1;
@@ -131,6 +140,13 @@ fn app_page_differs(app: &App, step: &str) -> bool {
 
 fn open(step: &str, app: &App, actions: &mut Vec<Action>) {
     if let Some(words) = step.strip_prefix("search:") {
+        // Nothing typed searches nothing for music: the page as it opens.
+        if words.trim().is_empty() && app.search_kind == super::SearchKind::Music {
+            if app.page != Page::Search {
+                actions.push(Action::Open(Page::Search));
+            }
+            return;
+        }
         if app.search.query != words.trim() || app.page != Page::Search {
             actions.push(Action::CaptureSearch(words.to_string()));
         }
@@ -153,6 +169,26 @@ fn open(step: &str, app: &App, actions: &mut Vec<Action>) {
     if let Some(words) = step.strip_prefix("quick:") {
         actions.push(Action::QuickSearchType(words.to_string()));
         return;
+    }
+    match step {
+        "radio" => return actions.push(Action::SetSearchKind(super::SearchKind::Radio)),
+        "music" => return actions.push(Action::SetSearchKind(super::SearchKind::Music)),
+        "ctrlf" => return actions.push(Action::ToggleSearchKind),
+        "playstation" => {
+            if let Some(station) = app.radio.stations.first() {
+                println!("  tuning in to {} ({})", station.title, station.source_url);
+                actions.push(Action::PlayStation(station.clone()));
+            }
+            return;
+        }
+        _ => {}
+    }
+    if let Some(code) = step.strip_prefix("country:") {
+        let code = code.trim().to_uppercase();
+        return actions.push(Action::SetRadioCountry(Some(code).filter(|c| !c.is_empty())));
+    }
+    if let Some(menu) = step.strip_prefix("menu:") {
+        return actions.push(Action::CaptureMenu(Some(menu.trim().to_string()).filter(|m| !m.is_empty())));
     }
     if step == "lyrics" {
         if !app.settings.lyrics_open {

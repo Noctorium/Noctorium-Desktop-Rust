@@ -192,6 +192,7 @@ fn asset_key(provider: ProviderType) -> &'static str {
         ProviderType::Deezer => "deezer",
         ProviderType::Tidal => "tidal",
         ProviderType::Local => "local",
+        ProviderType::Radio => "radio",
     }
 }
 

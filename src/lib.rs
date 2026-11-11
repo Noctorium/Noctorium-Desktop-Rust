@@ -28,6 +28,7 @@ pub mod noctplaylists;
 pub mod oauth;
 pub mod platform;
 pub mod queue;
+pub mod radio;
 pub mod sponsorblock;
 pub mod scrobble;
 pub mod services;

@@ -46,6 +46,7 @@ fn code(provider: ProviderType) -> &'static str {
         ProviderType::Deezer => "D",
         ProviderType::Tidal => "T",
         ProviderType::Local => "L",
+        ProviderType::Radio => "R",
     }
 }
 
@@ -60,6 +61,7 @@ fn provider(code: &str) -> Option<ProviderType> {
         "A" => ProviderType::AppleMusic,
         "D" => ProviderType::Deezer,
         "T" => ProviderType::Tidal,
+        "R" => ProviderType::Radio,
         _ => return None,
     })
 }
