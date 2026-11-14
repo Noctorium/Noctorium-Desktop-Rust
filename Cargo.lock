@@ -2701,7 +2701,7 @@ dependencies = [
 
 [[package]]
 name = "noctorium"
-version = "0.28.0"
+version = "0.29.0"
 dependencies = [
  "aes 0.8.4",
  "cbc 0.1.2",
