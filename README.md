@@ -111,7 +111,7 @@ never written back, so both can be used side by side. Settings › Your library 
 cargo run --release
 ```
 
-Rust 1.88 or newer. On Windows that needs Visual Studio's C++ build tools (the "Desktop development with C++"
+Rust 1.92 or newer. On Windows that needs Visual Studio's C++ build tools (the "Desktop development with C++"
 workload). The window is drawn with wgpu — Direct3D 12 on Windows, Metal on a Mac, Vulkan on Linux — and
 falls back to OpenGL; `NOCTORIUM_RENDERER=glow` asks for OpenGL straight away.
 
@@ -119,6 +119,27 @@ yt-dlp and mpv are looked for in this order: `NOCTORIUM_YTDLP_PATH` / `NOCTORIUM
 own `bin` folder, the Kotlin desktop's, `PATH`, and the places installers and package managers put them
 (`Program Files\MPV Player`, Scoop, Chocolatey, winget; Homebrew and MacPorts on a Mac). On Windows,
 Settings installs both; on Linux mpv comes from the distribution.
+
+### The Slint window
+
+Noctorium Rust is moving from egui to [Slint](https://slint.dev). The new window runs beside the egui one
+until it has everything the egui one has:
+
+```bash
+cargo run --release -- --ui slint
+```
+
+or `NOCTORIUM_UI=slint`. It drives the same app underneath — the queue, mpv, yt-dlp, the services, every
+setting — through the same actions, so the two can be switched between freely. So far it has the rail, the
+player bar, Home, Search, Library, Liked songs, Recently played and playlists, the queue with autoplay,
+Now playing with Up next and synced lyrics, every theme, and the song menu. Services, Connect, Downloads,
+Profile and most of Settings still open only in the egui window.
+
+The pages are in `ui/*.slint`, made into Rust by `build.rs`; `src/gui/slint_ui.rs` fills them from the app.
+It is drawn through OpenGL; `SLINT_BACKEND=winit-software` uses Slint's own renderer on a machine without it.
+On Linux, building it needs fontconfig's development files (`libfontconfig1-dev`). `NOCTORIUM_CAPTURE` takes
+pictures of it, as of the egui window: `home`, `search:<words>`, `play`, `queue`, `nowplaying`, `lyrics`,
+`library`, `liked`, `settings` and `theme:<KEY>`.
 
 On Windows, prefer yt-dlp's folder build (what the installer fetches) to the one-file `yt-dlp.exe`: the
 one-file build unpacks itself into the temporary folder every time it starts, which was measured at

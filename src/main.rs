@@ -13,8 +13,10 @@ Noctorium for the desktop, written in Rust: YouTube Music, SoundCloud and more, 
 
   --version   the version
   --tray      start in the tray, the window minimised
+  --ui slint  the new window, drawn by Slint (not everything is in it yet)
   --help      this
 
+  NOCTORIUM_UI=slint     the new window, as --ui slint
   NOCTORIUM_RUST_HOME    keep settings and the library in this folder
   NOCTORIUM_YTDLP_PATH   the yt-dlp to use
   NOCTORIUM_MPV_PATH     the mpv to use
@@ -46,7 +48,12 @@ fn main() -> ExitCode {
         noctorium::instance::Instance::First(listener) => listener,
     };
     noctorium::platform::tie_children_to_this_process();
-    match noctorium::gui::run(listener, in_tray) {
+    let opened = if noctorium::gui::slint_ui::wanted(&arguments) {
+        noctorium::gui::slint_ui::run(listener, in_tray)
+    } else {
+        noctorium::gui::run(listener, in_tray)
+    };
+    match opened {
         Ok(()) => ExitCode::SUCCESS,
         Err(why) => {
             complain(&format!("Noctorium could not open its window.\n\n{why}"));

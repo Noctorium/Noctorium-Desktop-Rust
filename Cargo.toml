@@ -2,7 +2,7 @@
 name = "noctorium"
 version = "0.29.1"
 edition = "2021"
-rust-version = "1.88"
+rust-version = "1.92"
 description = "Noctorium, the music player for YouTube Music and SoundCloud, written in Rust"
 license = "GPL-3.0-only"
 repository = "https://github.com/Noctorium/Noctorium-Desktop-Rust"
@@ -29,6 +29,10 @@ eframe = { version = "0.32.3", default-features = false, features = ["accesskit"
 # Linux and the Windows machines whose Direct3D 12 is missing. The same major version eframe is built on.
 wgpu = { version = "25", default-features = false, features = ["dx12", "metal", "vulkan", "wgsl"] }
 egui_extras = { version = "0.32.3", features = ["http", "image", "svg"] }
+# The new window, drawn by Slint, beside the egui one until it has everything egui has: `--ui slint`. The pages
+# are in ui/*.slint, compiled into Rust by build.rs. OpenGL through FemtoVG, and Slint's own software renderer
+# for a machine with no OpenGL (SLINT_BACKEND=winit-software). Held to 1.18: 1.19 is days old.
+slint = { version = "~1.18.1", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-femtovg", "renderer-software", "accessibility"] }
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 # Blocking HTTP with rustls: lyrics, the tool downloads, the update check. Each on a thread of its own.
 ureq = { version = "2", features = ["json"] }
@@ -66,6 +70,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 
 # Noctorium's icon in the tray, for while the window is closed and the music is not. Windows and the Mac;
 # on Linux it would need GTK's development files to build, and desktops there vary in whether they show one.
+[build-dependencies]
+slint-build = "~1.18.1"
+
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
 tray-icon = "0.21"
 

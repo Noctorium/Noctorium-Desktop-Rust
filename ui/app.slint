@@ -1,0 +1,602 @@
+// Noctorium Rust's window in Slint: the rail on the left, the page in the middle, the player bar under them,
+// as the egui window and the Kotlin desktop lay it out. Rust fills the properties from the app's state
+// (src/gui/slint_ui.rs) and hears back through Bridge.
+
+import { Theme, Bridge, Icons, Palette } from "theme.slint";
+import { TrackItem, Shelf, Icon, IconButton, PlayButton, Cover, NavButton, Bar, TrackMenu } from "widgets.slint";
+import { HomePage, SearchPage, LibraryPage, SongsPageView, QueuePage, NowPlayingPage, SettingsPage, NotYetPage, LibraryItem, SongsPage, LyricLine, NowPlaying, ThemeItem } from "pages.slint";
+
+export { Theme, Bridge, Icons, Palette, TrackItem, Shelf, LibraryItem, SongsPage, LyricLine, NowPlaying, ThemeItem }
+
+export struct NavEntry {
+    icon: string,
+    text: string,
+    page: string,
+}
+
+export struct ToastItem {
+    text: string,
+    error: bool,
+}
+
+export struct PlayerState {
+    has-track: bool,
+    title: string,
+    artist: string,
+    art: image,
+    has-art: bool,
+    liked: bool,
+    playing: bool,
+    busy: bool,
+    live: bool,
+    progress: float,
+    position: string,
+    duration: string,
+    volume: float,
+    muted: bool,
+    shuffle: bool,
+    /// 0 off, 1 the queue, 2 one song.
+    repeat: int,
+    speed: string,
+    lyrics-open: bool,
+}
+
+component Rail inherits Rectangle {
+    in property <[NavEntry]> nav;
+    in property <[LibraryItem]> playlists;
+    in property <string> page;
+    in property <image> mark;
+    width: 232px;
+    background: Theme.p.panel;
+    VerticalLayout {
+        padding-left: 12px;
+        padding-right: 12px;
+        padding-top: 18px;
+        padding-bottom: 12px;
+        spacing: 4px;
+        HorizontalLayout {
+            padding-left: 8px;
+            padding-bottom: 14px;
+            spacing: 10px;
+            Image {
+                width: 30px;
+                height: 30px;
+                source: root.mark;
+            }
+            Text {
+                text: "Noctorium";
+                color: Theme.p.text;
+                font-size: 21px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+        }
+        for entry in root.nav: NavButton {
+            icon: entry.icon;
+            text: entry.text;
+            lit: root.page == entry.page;
+            clicked => {
+                Bridge.act("open", entry.page);
+            }
+        }
+        Rectangle {
+            height: 22px;
+            Rectangle {
+                y: 10px;
+                height: 1px;
+                background: Theme.p.line;
+            }
+        }
+        Text {
+            text: "YOUR MUSIC";
+            color: Theme.p.faint;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.6px;
+        }
+        Flickable {
+            content-height: list.preferred-height;
+            list := VerticalLayout {
+                alignment: start;
+                spacing: 2px;
+                for item in root.playlists: Rectangle {
+                    height: 42px;
+                    border-radius: 8px * Theme.corners;
+                    background: root.page == item.page ? Theme.p.accent.transparentize(84%) : (touch.has-hover ? Theme.p.card : transparent);
+                    Cover {
+                        x: 8px;
+                        y: 5px;
+                        width: 32px;
+                        height: 32px;
+                        radius: 5px;
+                        art: item.art;
+                        has-art: item.has-art;
+                    }
+                    Text {
+                        x: 50px;
+                        width: parent.width - 58px;
+                        height: parent.height;
+                        text: item.title;
+                        color: root.page == item.page ? Theme.p.accent : Theme.p.text;
+                        font-size: 13.5px;
+                        overflow: elide;
+                        vertical-alignment: center;
+                    }
+                    touch := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            Bridge.act("open", item.page);
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The player bar, laid out as egui's Inline bar: the controls, the song, the progress, then the tools. Placed by
+/// hand, as egui places it, so every part is centred in the bar whatever its size.
+component PlayerBar inherits Rectangle {
+    in property <PlayerState> s;
+    in property <string> page;
+    height: 80px;
+    background: Theme.p.panel;
+    property <length> mid: self.height / 2;
+    property <length> song-x: 172px;
+    property <length> song-width: clamp(self.width * 0.24, 200px, 320px);
+    // The tools, from the right edge leftwards.
+    property <length> volume-x: self.width - 16px - 100px;
+    property <length> mute-x: root.volume-x - 6px - 34px;
+    property <length> queue-x: root.mute-x - 40px;
+    property <length> lyrics-x: root.queue-x - 40px;
+    property <length> shuffle-x: root.lyrics-x - 40px;
+    property <length> repeat-x: root.shuffle-x - 40px;
+    property <length> speed-x: root.repeat-x - 42px;
+    property <length> progress-x: root.song-x + root.song-width + 18px;
+    property <length> progress-width: max(80px, root.speed-x - 18px - root.progress-x);
+    Rectangle {
+        y: 0;
+        height: 1px;
+        background: Theme.p.line.transparentize(40%);
+    }
+    IconButton {
+        x: 16px;
+        y: root.mid - self.height / 2;
+        icon: Icons.previous;
+        size: 34px;
+        clicked => {
+            Bridge.act("previous", "");
+        }
+    }
+    PlayButton {
+        x: 58px;
+        y: root.mid - self.height / 2;
+        playing: root.s.playing;
+        size: 44px;
+        clicked => {
+            Bridge.act("toggle-play", "");
+        }
+    }
+    IconButton {
+        x: 110px;
+        y: root.mid - self.height / 2;
+        icon: Icons.next;
+        size: 34px;
+        clicked => {
+            Bridge.act("next", "");
+        }
+    }
+    // The song: its cover, title and artist, and the heart.
+    Rectangle {
+        x: root.song-x;
+        width: root.song-width;
+        if root.s.has-track: Cover {
+            x: 0;
+            y: root.mid - 26px;
+            width: 52px;
+            height: 52px;
+            radius: 6px;
+            art: root.s.art;
+            has-art: root.s.has-art;
+        }
+        Text {
+            x: root.s.has-track ? 64px : 0;
+            y: root.s.has-track ? root.mid - 20px : root.mid - self.height / 2;
+            width: parent.width - self.x - 36px;
+            text: root.s.has-track ? root.s.title : "Nothing playing";
+            color: root.s.has-track ? Theme.p.text : Theme.p.faint;
+            font-size: 15px;
+            font-weight: root.s.has-track ? 700 : 400;
+            overflow: elide;
+        }
+        if root.s.has-track: Text {
+            x: 64px;
+            y: root.mid + 1px;
+            width: parent.width - self.x - 36px;
+            text: root.s.artist;
+            color: Theme.p.subtext;
+            font-size: 13px;
+            overflow: elide;
+        }
+        TouchArea {
+            x: 0;
+            width: parent.width - 36px;
+            enabled: root.s.has-track;
+            mouse-cursor: self.enabled ? pointer : default;
+            clicked => {
+                Bridge.act("open", "nowplaying");
+            }
+        }
+        if root.s.has-track: IconButton {
+            x: parent.width - 32px;
+            y: root.mid - self.height / 2;
+            size: 30px;
+            icon: root.s.liked ? Icons.heart : Icons.heart-outline;
+            active: root.s.liked;
+            clicked => {
+                Bridge.act("like-current", "");
+            }
+        }
+    }
+    // The progress, between the song and the tools.
+    Text {
+        x: root.progress-x;
+        y: root.mid - self.height / 2;
+        width: 40px;
+        text: root.s.position;
+        color: Theme.p.subtext;
+        font-size: 12.5px;
+        horizontal-alignment: right;
+    }
+    Bar {
+        x: root.progress-x + 50px;
+        y: root.mid - self.height / 2;
+        width: root.progress-width - 100px;
+        value: root.s.progress;
+        enabled: root.s.has-track && !root.s.live;
+        released(fraction) => {
+            Bridge.seek(fraction);
+        }
+    }
+    Text {
+        x: root.progress-x + root.progress-width - 40px;
+        y: root.mid - self.height / 2;
+        width: 40px;
+        text: root.s.live ? "LIVE" : root.s.duration;
+        color: root.s.live ? Theme.p.accent : Theme.p.subtext;
+        font-size: 12.5px;
+        font-weight: root.s.live ? 700 : 400;
+    }
+    Rectangle {
+        x: root.speed-x;
+        y: root.mid - 15px;
+        width: 36px;
+        height: 30px;
+        border-radius: 8px * Theme.corners;
+        background: speed-touch.has-hover ? Theme.p.card : transparent;
+        Text {
+            text: root.s.speed;
+            color: root.s.speed == "1×" ? Theme.p.subtext : Theme.p.accent;
+            font-size: 12.5px;
+            font-weight: 700;
+            horizontal-alignment: center;
+            vertical-alignment: center;
+        }
+        speed-touch := TouchArea {
+            mouse-cursor: pointer;
+            clicked => {
+                Bridge.act("next-speed", "");
+            }
+        }
+    }
+    IconButton {
+        x: root.repeat-x;
+        y: root.mid - self.height / 2;
+        icon: root.s.repeat == 2 ? Icons.repeat-one : Icons.repeat;
+        active: root.s.repeat != 0;
+        size: 34px;
+        clicked => {
+            Bridge.act("cycle-repeat", "");
+        }
+    }
+    IconButton {
+        x: root.shuffle-x;
+        y: root.mid - self.height / 2;
+        icon: Icons.shuffle;
+        active: root.s.shuffle;
+        size: 34px;
+        clicked => {
+            Bridge.act("toggle-shuffle", "");
+        }
+    }
+    IconButton {
+        x: root.lyrics-x;
+        y: root.mid - self.height / 2;
+        icon: Icons.lyrics;
+        active: root.page == "nowplaying";
+        size: 34px;
+        clicked => {
+            Bridge.act("open", root.page == "nowplaying" ? "back" : "nowplaying-lyrics");
+        }
+    }
+    IconButton {
+        x: root.queue-x;
+        y: root.mid - self.height / 2;
+        icon: Icons.queue;
+        active: root.page == "queue";
+        size: 34px;
+        clicked => {
+            Bridge.act("open", root.page == "queue" ? "back" : "queue");
+        }
+    }
+    IconButton {
+        x: root.mute-x;
+        y: root.mid - self.height / 2;
+        icon: root.s.muted || root.s.volume <= 0 ? Icons.muted : Icons.volume;
+        size: 34px;
+        clicked => {
+            Bridge.act("toggle-mute", "");
+        }
+    }
+    Bar {
+        x: root.volume-x;
+        y: root.mid - self.height / 2;
+        width: 100px;
+        value: root.s.muted ? 0 : root.s.volume;
+        changed(fraction) => {
+            Bridge.volume(fraction);
+        }
+        released(fraction) => {
+            Bridge.volume(fraction);
+        }
+    }
+}
+
+export component AppWindow inherits Window {
+    in property <string> window-title: "Noctorium";
+    title: root.window-title;
+    preferred-width: 1240px;
+    preferred-height: 800px;
+    min-width: 860px;
+    min-height: 560px;
+    background: Theme.p.page;
+    default-font-family: Theme.font;
+    icon: root.mark;
+
+    in property <image> mark;
+    in property <string> page: "home";
+    /// What the rail lights up: the page, or the playlist open.
+    in property <string> rail-page: "home";
+    in property <[NavEntry]> nav;
+    in property <[LibraryItem]> rail-playlists;
+    in property <PlayerState> player;
+    in property <[ToastItem]> toasts;
+
+    in property <string> greeting;
+    in property <[Shelf]> home-shelves;
+    in property <string> home-notice;
+    in property <length> card-side: 172px;
+
+    in-out property <string> search-query;
+    in property <[Shelf]> search-groups;
+    in property <string> search-hint;
+
+    in property <int> liked-count;
+    in property <int> recent-count;
+    in property <[LibraryItem]> library-playlists;
+    in property <[LibraryItem]> library-followed;
+    in-out property <string> new-playlist;
+
+    in property <SongsPage> songs;
+
+    in property <[TrackItem]> queue-tracks;
+    in property <[TrackItem]> queue-suggestions;
+    in property <string> queue-suggestions-title;
+    in property <string> queue-summary;
+
+    in property <NowPlaying> now;
+    in property <[TrackItem]> up-next;
+    in property <[LyricLine]> lyrics;
+    in property <bool> lyrics-synced;
+    in property <string> lyrics-note;
+    in property <int> lyric-current;
+    in-out property <string> now-side: "next";
+
+    in property <[ThemeItem]> themes;
+    in property <string> not-yet;
+
+    /// The song a menu is open for.
+    property <string> menu-list;
+    property <int> menu-index;
+    property <bool> menu-liked;
+    callback menu-liked-of(string, int) -> bool;
+
+    /// Copies text to the clipboard through a text box: Slint has no clipboard of its own to call.
+    public function copy(text: string) {
+        clipboard.text = text;
+        clipboard.select-all();
+        clipboard.copy();
+    }
+
+    public function focus-search() {
+        search.focus-box();
+    }
+
+    function open-menu(list: string, index: int, px: length, py: length) {
+        root.menu-list = list;
+        root.menu-index = index;
+        root.menu-liked = root.menu-liked-of(list, index);
+        menu.show();
+        menu-x = min(px, root.width - 230px);
+        menu-y = min(py, root.height - 230px);
+    }
+    property <length> menu-x;
+    property <length> menu-y;
+
+    keys := FocusScope {
+        key-pressed(event) => {
+            if (event.modifiers.control && (event.text == "f" || event.text == "F")) {
+                Bridge.act("open", "search");
+                root.focus-search();
+                return accept;
+            }
+            if (event.text == " ") {
+                Bridge.act("toggle-play", "");
+                return accept;
+            }
+            if (event.modifiers.control && event.text == Key.RightArrow) {
+                Bridge.act("next", "");
+                return accept;
+            }
+            if (event.modifiers.control && event.text == Key.LeftArrow) {
+                Bridge.act("previous", "");
+                return accept;
+            }
+            if (event.text == Key.RightArrow) {
+                Bridge.act("seek-by", 5000);
+                return accept;
+            }
+            if (event.text == Key.LeftArrow) {
+                Bridge.act("seek-by", -5000);
+                return accept;
+            }
+            if (event.modifiers.control && (event.text == "l" || event.text == "L")) {
+                Bridge.act("open", root.page == "nowplaying" ? "back" : "nowplaying-lyrics");
+                return accept;
+            }
+            if (event.text == "m" || event.text == "M") {
+                Bridge.act("toggle-mute", "");
+                return accept;
+            }
+            if (event.text == Key.Escape || (event.modifiers.alt && event.text == Key.LeftArrow)) {
+                Bridge.act("open", "back");
+                return accept;
+            }
+            return reject;
+        }
+        VerticalLayout {
+            HorizontalLayout {
+                vertical-stretch: 1;
+                Rail {
+                    nav: root.nav;
+                    playlists: root.rail-playlists;
+                    page: root.rail-page;
+                    mark: root.mark;
+                }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    if root.page == "home": HomePage {
+                        greeting: root.greeting;
+                        shelves: root.home-shelves;
+                        notice: root.home-notice;
+                        card-side: root.card-side;
+                        menu(l, n, mx, my) => {
+                            root.open-menu(l, n, mx, my);
+                        }
+                    }
+                    search := SearchPage {
+                        visible: root.page == "search";
+                        query <=> root.search-query;
+                        groups: root.search-groups;
+                        hint: root.search-hint;
+                        menu(l, n, mx, my) => {
+                            root.open-menu(l, n, mx, my);
+                        }
+                    }
+                    if root.page == "library": LibraryPage {
+                        liked-count: root.liked-count;
+                        recent-count: root.recent-count;
+                        playlists: root.library-playlists;
+                        followed: root.library-followed;
+                        new-playlist <=> root.new-playlist;
+                    }
+                    if root.page == "songs": SongsPageView {
+                        songs: root.songs;
+                        menu(l, n, mx, my) => {
+                            root.open-menu(l, n, mx, my);
+                        }
+                    }
+                    if root.page == "queue": QueuePage {
+                        tracks: root.queue-tracks;
+                        suggestions: root.queue-suggestions;
+                        suggestions-title: root.queue-suggestions-title;
+                        summary: root.queue-summary;
+                        menu(l, n, mx, my) => {
+                            root.open-menu(l, n, mx, my);
+                        }
+                    }
+                    if root.page == "nowplaying": NowPlayingPage {
+                        now: root.now;
+                        playing: root.player.playing;
+                        progress: root.player.progress;
+                        position: root.player.position;
+                        duration: root.player.duration;
+                        shuffle: root.player.shuffle;
+                        repeat: root.player.repeat;
+                        up-next: root.up-next;
+                        lyrics: root.lyrics;
+                        lyrics-synced: root.lyrics-synced;
+                        lyrics-note: root.lyrics-note;
+                        lyric-current: root.lyric-current;
+                        side <=> root.now-side;
+                        menu(l, n, mx, my) => {
+                            root.open-menu(l, n, mx, my);
+                        }
+                    }
+                    if root.page == "settings": SettingsPage {
+                        themes: root.themes;
+                    }
+                    if root.page == "other": NotYetPage {
+                        name: root.not-yet;
+                    }
+                }
+            }
+            PlayerBar {
+                s: root.player;
+                page: root.page;
+            }
+        }
+    }
+
+    // The toasts, over everything, at the foot of the page.
+    VerticalLayout {
+        x: (root.width - 420px) / 2 + 116px;
+        y: root.height - 96px - self.preferred-height;
+        width: 420px;
+        spacing: 6px;
+        alignment: end;
+        for toast in root.toasts: Rectangle {
+            height: words.preferred-height + 18px;
+            border-radius: 10px * Theme.corners;
+            background: toast.error ? Theme.p.error.mix(Theme.p.raised, 25%) : Theme.p.raised;
+            border-width: 1px;
+            border-color: toast.error ? Theme.p.error : Theme.p.line;
+            drop-shadow-blur: 14px;
+            drop-shadow-color: #00000070;
+            words := Text {
+                x: 14px;
+                width: parent.width - 28px;
+                text: toast.text;
+                color: toast.error ? #ffffff : Theme.p.text;
+                font-size: 13.5px;
+                wrap: word-wrap;
+                vertical-alignment: center;
+            }
+        }
+    }
+
+    menu := TrackMenu {
+        x: root.menu-x;
+        y: root.menu-y;
+        list: root.menu-list;
+        index: root.menu-index;
+        liked: root.menu-liked;
+        queued: root.menu-list == "queue";
+    }
+
+    clipboard := TextInput {
+        visible: false;
+        width: 0;
+        height: 0;
+    }
+}

@@ -11,6 +11,8 @@ fn main() {
     let out = PathBuf::from(std::env::var("OUT_DIR").expect("cargo sets OUT_DIR"));
     println!("cargo:rerun-if-env-changed=NOCTORIUM_VERSION");
     println!("cargo:rerun-if-changed=build.rs");
+    // The Slint window's pages, made into Rust. slint-build says itself which files to watch.
+    slint_build::compile("ui/app.slint").expect("the Slint pages did not compile");
 
     if std::env::var("CARGO_CFG_TARGET_OS").as_deref() == Ok("windows") {
         windows_resources(&out);

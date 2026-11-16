@@ -154,7 +154,7 @@ pub fn central(app: &App, ctx: &egui::Context, inputs: &mut Inputs, actions: &mu
         });
 }
 
-fn greeting() -> &'static str {
+pub(super) fn greeting() -> &'static str {
     use chrono::Timelike;
     match chrono::Local::now().hour() {
         5..=11 => "Good morning",

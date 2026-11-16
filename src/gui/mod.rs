@@ -6,12 +6,14 @@
 //! Nothing waits on the network or on a program on the thread that draws.
 
 mod capture;
+pub mod host;
 mod icons;
 mod pages;
 mod player;
 mod radio;
 mod settings;
 mod shadow;
+pub mod slint_ui;
 mod widgets;
 
 use crate::bangs::{self, SearchMode};
@@ -76,7 +78,7 @@ fn open_window(
         options,
         Box::new(move |cc| {
             egui_extras::install_image_loaders(&cc.egui_ctx);
-            let mut app = App::new(&cc.egui_ctx, places);
+            let mut app = App::new(std::sync::Arc::new(host::EguiHost(cc.egui_ctx.clone())), places);
             // Before the first frame, which already writes in bold.
             theme::install_fonts(&cc.egui_ctx, app.settings.looks.font);
             app.applied_font = Some(app.settings.looks.font);
@@ -380,7 +382,7 @@ impl Diagnose {
 }
 
 /// What the threads send back.
-enum Event {
+pub enum Event {
     Search { id: u64, provider: ProviderType, result: Result<Vec<Track>, String> },
     Home { id: u64, slot: usize, row: HomeRow },
     Resolved { request: u64, track: Track, start_ms: i64, paused: bool, result: Result<Resolved, String> },
@@ -603,7 +605,7 @@ pub struct ToolInfo {
 }
 
 pub struct App {
-    ctx: egui::Context,
+    host: host::Host,
     places: Places,
     pub settings: Settings,
     pub library: Library,
@@ -832,7 +834,7 @@ pub struct QuickSearch {
 }
 
 impl App {
-    fn new(ctx: &egui::Context, places: Places) -> App {
+    fn new(host: host::Host, places: Places) -> App {
         let mut settings = store::load_settings(&places);
         let mut library = store::load_library(&places);
         if !settings.imported_neighbour {
@@ -852,10 +854,10 @@ impl App {
         backend.set_cookies_browser(settings.cookies_browser.clone());
         let notify = {
             let events = events.clone();
-            let ctx = ctx.clone();
+            let ctx = host.clone();
             move |event: EngineEvent| {
                 let _ = events.send(Event::Engine(event));
-                ctx.request_repaint();
+                ctx.wake();
             }
         };
         let levels = levels_for(&settings, settings.repeat, false);
@@ -873,7 +875,7 @@ impl App {
         let palette = theme::palette_for(&settings.theme, &settings.looks, None);
         let places_for_downloads = places.clone();
         let mut app = App {
-            ctx: ctx.clone(),
+            host: host.clone(),
             places,
             library,
             queue,
@@ -1053,10 +1055,10 @@ impl App {
             .unwrap_or_default();
         app.start_hot_keys();
         let icon = widgets::app_icon();
-        let (events, ctx) = (app.events.clone(), app.ctx.clone());
+        let (events, ctx) = (app.events.clone(), app.host.clone());
         app.tray = crate::tray::Tray::start(icon.rgba, icon.width, move |command| {
             let _ = events.send(Event::Tray(command));
-            ctx.request_repaint();
+            ctx.wake();
         });
         app.startup_mode = crate::startup::mode();
         if app.settings.widgets.enabled {
@@ -1073,11 +1075,11 @@ impl App {
     /// Runs `work` on a thread of its own and posts what it answers.
     fn spawn(&self, work: impl FnOnce() -> Event + Send + 'static) {
         let events = self.events.clone();
-        let ctx = self.ctx.clone();
+        let ctx = self.host.clone();
         std::thread::spawn(move || {
             let event = work();
             let _ = events.send(event);
-            ctx.request_repaint();
+            ctx.wake();
         });
     }
 
@@ -1543,7 +1545,7 @@ impl App {
         auth.asking = true;
         auth.asked_at = Instant::now();
         let site = auth.site;
-        self.ctx.request_repaint_after(Duration::from_secs(2));
+        self.host.wake_after(Duration::from_secs(2));
         self.spawn(move || Event::AuthorizationAnswered { site, result: crate::scrobble::complete_authorization(site, &token) });
     }
 
@@ -1687,12 +1689,12 @@ impl App {
         }
         self.jobs.insert(key.clone(), (format!("Downloading “{}”", track.title), 0.0));
         let (backend, places) = (self.backend.clone(), self.places.clone());
-        let (events, ctx) = (self.events.clone(), self.ctx.clone());
+        let (events, ctx) = (self.events.clone(), self.host.clone());
         self.spawn(move || {
             let progress_key = key.clone();
             let progress = |p: f32| {
                 let _ = events.send(Event::JobProgress { key: progress_key.clone(), progress: p });
-                ctx.request_repaint();
+                ctx.wake();
             };
             Event::Downloaded { key, result: crate::downloads::download(&backend, &places, &track, &progress) }
         });
@@ -1845,7 +1847,7 @@ impl App {
                 });
             }
         }
-        if self.settings.announce_tracks && (self.window_minimised || !self.ctx.input(|i| i.focused)) {
+        if self.settings.announce_tracks && (self.window_minimised || !self.host.focused()) {
             crate::platform::announce(&track.title, &track.artist_line());
         }
         self.prefetch_upcoming();
@@ -2079,9 +2081,13 @@ impl App {
     // ---- lyrics and artwork -----------------------------------------------------------------------
 
     fn fetch_lyrics_if_open(&mut self) {
-        if !self.settings.lyrics_open {
-            return;
+        if self.settings.lyrics_open {
+            self.fetch_lyrics();
         }
+    }
+
+    /// Asks for the lyrics of the song playing, unless they are here or on their way.
+    pub fn fetch_lyrics(&mut self) {
         let Some(track) = self.queue.current().cloned().filter(|t| !t.provider.is_radio()) else { return };
         let key = track.queue_key();
         if self.lyrics.contains_key(&key) {
@@ -2293,9 +2299,9 @@ impl App {
                 }
             }
             Event::ShowWindow => {
-                self.ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
-                self.ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                self.ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                self.host.command(host::WindowCommand::Show);
+                self.host.command(host::WindowCommand::Minimise(false));
+                self.host.command(host::WindowCommand::Focus);
             }
             Event::Update(newer) => {
                 self.checking_update = false;
@@ -2688,7 +2694,7 @@ impl App {
                     Ok(()) => {
                         self.toast("The installer has started. Noctorium closes so it can be replaced.", false);
                         self.quitting = true;
-                        self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        self.host.command(host::WindowCommand::Close);
                     }
                     Err(why) => self.toast(why, true),
                 }
@@ -2779,15 +2785,15 @@ impl App {
             Event::Tray(command) => match command {
                 crate::tray::Command::Open => {
                     self.window_minimised = false;
-                    self.ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
-                    self.ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    self.host.command(host::WindowCommand::Minimise(false));
+                    self.host.command(host::WindowCommand::Focus);
                 }
                 crate::tray::Command::PlayPause => self.toggle_play(),
                 crate::tray::Command::Next => self.next(),
                 crate::tray::Command::Previous => self.previous(),
                 crate::tray::Command::Quit => {
                     self.quitting = true;
-                    self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    self.host.command(host::WindowCommand::Close);
                 }
             },
             Event::HotKey(pressed) => match pressed {
@@ -3204,7 +3210,7 @@ impl App {
                 }
                 self.tool_mut(tool).installing = Some(0.0);
                 let places = self.places.clone();
-                let (events, ctx) = (self.events.clone(), self.ctx.clone());
+                let (events, ctx) = (self.events.clone(), self.host.clone());
                 self.spawn(move || {
                     let last = std::sync::Mutex::new(Instant::now());
                     let progress = |fraction: f32| {
@@ -3212,7 +3218,7 @@ impl App {
                         if last.elapsed() > Duration::from_millis(150) {
                             *last = Instant::now();
                             let _ = events.send(Event::ToolProgress(tool, fraction));
-                            ctx.request_repaint();
+                            ctx.wake();
                         }
                     };
                     Event::ToolDone { tool, result: tools::install(tool, &places, &progress) }
@@ -3240,7 +3246,7 @@ impl App {
             }
             Action::OpenUrl(url) => open_externally(&url),
             Action::Copy(text) => {
-                self.ctx.copy_text(text);
+                self.host.copy_text(text);
                 self.toast("Link copied", false);
             }
             Action::ToggleLyrics => {
@@ -3413,7 +3419,7 @@ impl App {
             // "crash": closes Noctorium as the tray's Quit does. Nothing actually crashes.
             Action::Code(settings::ExperimentalCode::Crash) => {
                 self.quitting = true;
-                self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.host.command(host::WindowCommand::Close);
             }
             // "sh@d0w": the secret theme, saved at once and there when Noctorium opens again, under five seconds of
             // takeover, after which the window closes.
@@ -3454,7 +3460,7 @@ impl App {
             Action::RestartToUpdate => match crate::update::relaunch() {
                 Ok(()) => {
                     self.quitting = true;
-                    self.ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                    self.host.command(host::WindowCommand::Close);
                 }
                 Err(why) => self.toast(why, true),
             },
@@ -3538,12 +3544,12 @@ impl App {
                 };
                 self.jobs.insert(key.clone(), (format!("Saving “{}”", track.title), 0.0));
                 let (backend, mpv) = (self.backend.clone(), self.mpv.path.clone());
-                let (events, ctx) = (self.events.clone(), self.ctx.clone());
+                let (events, ctx) = (self.events.clone(), self.host.clone());
                 self.spawn(move || {
                     let progress_key = key.clone();
                     let progress = |p: f32| {
                         let _ = events.send(Event::JobProgress { key: progress_key.clone(), progress: p });
-                        ctx.request_repaint();
+                        ctx.wake();
                     };
                     let result = crate::downloads::export(&backend, mpv.as_deref(), &track, &folder, format, &progress);
                     Event::Exported { key, title: track.title.clone(), result }
@@ -3815,9 +3821,9 @@ impl App {
             }
             Action::ToggleWindow => {
                 self.window_minimised = !self.window_minimised;
-                self.ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(self.window_minimised));
+                self.host.command(host::WindowCommand::Minimise(self.window_minimised));
                 if !self.window_minimised {
-                    self.ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                    self.host.command(host::WindowCommand::Focus);
                 }
             }
             Action::SpotifySignIn => {
@@ -4026,11 +4032,11 @@ impl App {
             .filter(|n| !n.is_empty())
             .unwrap_or_else(|| "This computer".into());
         let identity = crate::connect::Identity { id: self.settings.connect_device_id.clone(), name };
-        let (events, ctx) = (self.events.clone(), self.ctx.clone());
+        let (events, ctx) = (self.events.clone(), self.host.clone());
         self.connect = None;
         match crate::connect::Connect::start(identity, key, move |asked| {
             let _ = events.send(Event::ConnectAsked(asked));
-            ctx.request_repaint();
+            ctx.wake();
         }) {
             Ok(connect) => {
                 self.connect = Some(std::sync::Arc::new(connect));
@@ -4240,10 +4246,10 @@ impl App {
                 self.global_actions.push(index);
             }
         }
-        let (events, ctx) = (self.events.clone(), self.ctx.clone());
+        let (events, ctx) = (self.events.clone(), self.host.clone());
         let keys = crate::platform::listen(chords, move |pressed| {
             let _ = events.send(Event::HotKey(pressed));
-            ctx.request_repaint();
+            ctx.wake();
         });
         self.media_keys = keys.media.clone();
         self.global_granted = keys.global.clone();
@@ -4368,20 +4374,21 @@ impl App {
         }
     }
 
-    fn update_title(&mut self, ctx: &egui::Context) {
+    fn update_title(&mut self) {
         let title = match self.loaded.as_ref().or(self.resolving.as_ref()) {
             Some(track) => format!("{} · {} — Noctorium", track.title, track.artist_line()),
             None => TITLE.to_string(),
         };
         if title != self.last_title {
-            ctx.send_viewport_cmd(egui::ViewportCommand::Title(title.clone()));
+            self.host.command(host::WindowCommand::Title(title.clone()));
             self.last_title = title;
         }
     }
-}
 
-impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    // ---- each frame, whichever window draws it ---------------------------------------------------
+
+    /// Before the window is drawn: what the threads sent, the timers that are due, and the colours to draw in.
+    pub fn tick(&mut self) {
         self.receive();
         // Noctorium playlists: soon after a change, and every three minutes for what another device changed.
         if self.playlist_sync_at.is_some_and(|at| Instant::now() >= at) {
@@ -4394,13 +4401,90 @@ impl eframe::App for App {
             self.checking_update = true;
             self.spawn(|| Event::Update(crate::update::check()));
         }
-        // The palette is worked out every frame -- the accent may follow the cover -- and egui dressed in it
-        // only when it changed.
+        // Worked out every frame: the accent may follow the cover.
         let artwork = self.artwork_colour();
-        let palette = theme::palette_for(&self.settings.theme, &self.settings.looks, artwork);
+        self.palette = theme::palette_for(&self.settings.theme, &self.settings.looks, artwork);
+    }
+
+    /// After the window is drawn and what the listener did is done: everything that keeps the app in step with
+    /// the player, the services and the system. Asks to be woken again while there is something to keep up with.
+    pub fn settle(&mut self) {
+        if self.settings.lyrics_open {
+            self.fetch_lyrics_if_open();
+        }
+        self.watch();
+        self.update_presence();
+        self.keep_tray_in_step();
+        self.feed_widgets();
+        self.feed_connect();
+        self.track_listening();
+        self.poll_authorization();
+        self.run_quick_search();
+        if self.sleep.is_some() || self.authorizing.is_some() {
+            self.host.wake_after(Duration::from_millis(500));
+        }
+        self.update_title();
+        if self.queue_dirty.is_some_and(|at| at.elapsed() > Duration::from_secs(2)) {
+            self.save_queue();
+        }
+        self.toasts.retain(|t| t.at.elapsed() < Duration::from_secs(if t.error { 7 } else { 3 }));
+        let state = self.engine.state();
+        if matches!(state.status, Status::Playing | Status::Loading) || self.resolving.is_some() || !self.toasts.is_empty() {
+            let pace = if self.page == Page::NowPlaying && self.settings.visualiser && state.status == Status::Playing { 33 } else { 200 };
+            self.host.wake_after(Duration::from_millis(pace));
+        }
+    }
+
+    /// The window was asked to close. True when it should stay open: closing to the tray leaves the music playing.
+    pub fn close_to_tray(&mut self) -> bool {
+        if !(self.settings.close_to_tray && self.tray.is_some() && !self.quitting) {
+            return false;
+        }
+        self.host.command(host::WindowCommand::Minimise(true));
+        self.window_minimised = true;
+        if !self.told_about_tray {
+            self.told_about_tray = true;
+            self.toast("Noctorium is still playing, in the tray. Quit it from there.", false);
+        }
+        true
+    }
+
+    /// What closing does, whichever window: everything saved, and mpv let go.
+    pub fn shut_down(&mut self) {
+        self.save_spotify_tokens();
+        self.save_queue();
+        self.save_settings();
+        self.engine.stop();
+        // A moment for the mpv thread to let go of its player before the process ends.
+        std::thread::sleep(Duration::from_millis(150));
+    }
+
+    /// Carries out what the listener did.
+    pub fn act(&mut self, action: Action) {
+        self.perform(action);
+    }
+
+    pub fn engine_state(&self) -> crate::mpv::PlaybackState {
+        self.engine.state()
+    }
+
+    pub fn events_sender(&self) -> Sender<Event> {
+        self.events.clone()
+    }
+
+    /// The window was minimised or brought back by the listener, not by the app.
+    pub fn set_window_minimised(&mut self, minimised: bool) {
+        self.window_minimised = minimised;
+    }
+}
+
+impl eframe::App for App {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        self.tick();
+        // egui is dressed in the palette only when it changed.
+        let palette = self.palette;
         let look = (palette, self.settings.looks.corners, theme::skin_of(&self.settings.theme));
         if self.applied_look != Some(look) {
-            self.palette = palette;
             theme::apply(ctx, &palette, look.1, look.2);
             self.applied_look = Some(look);
         }
@@ -4456,7 +4540,7 @@ impl eframe::App for App {
             if started.elapsed() >= shadow::TAKEOVER {
                 self.shadow_takeover = None;
                 self.quitting = true;
-                ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                self.host.command(host::WindowCommand::Close);
             }
         }
         pages::skin_title_bar(self, ctx);
@@ -4481,49 +4565,15 @@ impl eframe::App for App {
             self.perform(action);
         }
 
-        if self.settings.lyrics_open {
-            self.fetch_lyrics_if_open();
-        }
-        self.watch();
-        self.update_presence();
-        self.keep_tray_in_step();
-        self.feed_widgets();
-        self.feed_connect();
+        self.settle();
         // Closing with "close to the tray" on leaves Noctorium playing there.
-        if ctx.input(|i| i.viewport().close_requested()) && self.settings.close_to_tray && self.tray.is_some() && !self.quitting {
-            ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
-            ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(true));
-            self.window_minimised = true;
-            if !self.told_about_tray {
-                self.told_about_tray = true;
-                self.toast("Noctorium is still playing, in the tray. Quit it from there.", false);
-            }
-        }
-        self.track_listening();
-        self.poll_authorization();
-        self.run_quick_search();
-        if self.sleep.is_some() || self.authorizing.is_some() {
-            ctx.request_repaint_after(Duration::from_millis(500));
-        }
-        self.update_title(ctx);
-        if self.queue_dirty.is_some_and(|at| at.elapsed() > Duration::from_secs(2)) {
-            self.save_queue();
-        }
-        self.toasts.retain(|t| t.at.elapsed() < Duration::from_secs(if t.error { 7 } else { 3 }));
-        let state = self.engine.state();
-        if matches!(state.status, Status::Playing | Status::Loading) || self.resolving.is_some() || !self.toasts.is_empty() {
-            let pace = if self.page == Page::NowPlaying && self.settings.visualiser && state.status == Status::Playing { 33 } else { 200 };
-            ctx.request_repaint_after(Duration::from_millis(pace));
+        if ctx.input(|i| i.viewport().close_requested()) && self.close_to_tray() {
+            self.host.command(host::WindowCommand::CancelClose);
         }
     }
 
     fn on_exit(&mut self, _gl: Option<&eframe::glow::Context>) {
-        self.save_spotify_tokens();
-        self.save_queue();
-        self.save_settings();
-        self.engine.stop();
-        // A moment for the mpv thread to let go of its player before the process ends.
-        std::thread::sleep(Duration::from_millis(150));
+        self.shut_down();
     }
 }
 
