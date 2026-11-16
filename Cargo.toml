@@ -74,7 +74,9 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 slint-build = "~1.18.1"
 
 [target.'cfg(any(windows, target_os = "macos"))'.dependencies]
-tray-icon = "0.21"
+# On the same menu library (muda 0.19) as Slint's window: two copies of it define the same Objective-C class, which
+# a Mac release build will not link.
+tray-icon = "0.24"
 
 [target."cfg(windows)".dependencies]
 # The message box for a window that cannot open, and the job object that takes yt-dlp and mpv down with
