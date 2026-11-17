@@ -132,16 +132,51 @@ pub fn load(backend: &YtDlp, artist: &ArtistRef) -> Result<Playlist, String> {
             .or_else(|_| songs_by(backend, artist))?,
         _ => songs_by(backend, artist)?,
     };
+    // A SoundCloud profile says more about itself: its picture and how many follow it.
+    let (picture, followers) = match (&artist.profile, artist.provider) {
+        (Some(profile), ProviderType::Soundcloud) => crate::soundcloud::profile(profile).map(|(a, f, _)| (a, f)).unwrap_or((None, None)),
+        _ => (None, None),
+    };
     Ok(Playlist {
         id: key(artist),
         title: artist.name.clone(),
         provider: artist.provider,
-        owner_name: Some(format!("Artist · {}", artist.provider.display_name())),
-        artwork_url: artist.artwork.clone().or_else(|| tracks.iter().find_map(|t| t.artwork_url.clone())),
+        owner_name: followers.map(|n| format!("{} followers", followers_line(n))),
+        artwork_url: picture.or_else(|| artist.artwork.clone()).or_else(|| tracks.iter().find_map(|t| t.artwork_url.clone())),
         track_count: Some(tracks.len() as i64),
         tracks,
         source_url: artist.profile.clone(),
     })
+}
+
+/// 950, 12K, 1.2M: followers as a page says them.
+pub fn followers_line(count: i64) -> String {
+    if count >= 1_000_000 {
+        format!("{:.1}M", count as f64 / 1_000_000.0).replace(".0M", "M")
+    } else if count >= 10_000 {
+        format!("{}K", count / 1_000)
+    } else if count >= 1_000 {
+        format!("{:.1}K", count as f64 / 1_000.0).replace(".0K", "K")
+    } else {
+        count.to_string()
+    }
+}
+
+/// Their page on the service itself, for "Open on …": the SoundCloud profile, or the service's own search for them.
+pub fn page_url(artist: &ArtistRef) -> Option<String> {
+    let name = crate::ytdlp::percent_encode(&artist.name);
+    match artist.provider {
+        ProviderType::Soundcloud => Some(artist.profile.clone().unwrap_or_else(|| format!("https://soundcloud.com/search/people?q={name}"))),
+        ProviderType::YoutubeMusic => Some(format!("https://music.youtube.com/search?q={name}")),
+        ProviderType::YoutubeVideo => Some(format!("https://www.youtube.com/results?search_query={name}")),
+        ProviderType::Spotify => Some(format!("https://open.spotify.com/search/{name}")),
+        ProviderType::Deezer => Some(format!("https://www.deezer.com/search/{name}")),
+        ProviderType::Tidal => Some(format!("https://tidal.com/search?q={name}")),
+        ProviderType::AppleMusic => Some(format!("https://music.apple.com/search?term={name}")),
+        ProviderType::Bandcamp => Some(format!("https://bandcamp.com/search?q={name}&item_type=b")),
+        ProviderType::Vk => Some(format!("https://vk.com/audio?q={name}")),
+        ProviderType::Local | ProviderType::Radio => None,
+    }
 }
 
 fn songs_by(backend: &YtDlp, artist: &ArtistRef) -> Result<Vec<Track>, String> {
@@ -178,6 +213,18 @@ mod tests {
         let daft = of_track(&song(ProviderType::YoutubeMusic, "Daft Punk", "https://music.youtube.com/watch?v=x")).unwrap();
         assert_eq!(parse(&key(&daft)).unwrap().profile, None);
         assert!(of_track(&song(ProviderType::Radio, "France", "https://radio")).is_none());
+    }
+
+    #[test]
+    fn followers_and_service_pages_read_as_a_page_says_them() {
+        assert_eq!(followers_line(783_412), "783K");
+        assert_eq!(followers_line(2_210_000), "2.2M");
+        assert_eq!(followers_line(1_500), "1.5K");
+        assert_eq!(followers_line(950), "950");
+        let odesza = ArtistRef { provider: ProviderType::Soundcloud, name: "ODESZA".into(), profile: Some("https://soundcloud.com/odesza".into()), artwork: None };
+        assert_eq!(page_url(&odesza).as_deref(), Some("https://soundcloud.com/odesza"));
+        let daft = ArtistRef { provider: ProviderType::YoutubeMusic, name: "Daft Punk".into(), profile: None, artwork: None };
+        assert_eq!(page_url(&daft).as_deref(), Some("https://music.youtube.com/search?q=Daft+Punk"));
     }
 
     #[test]

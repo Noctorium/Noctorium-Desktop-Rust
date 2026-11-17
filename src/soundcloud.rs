@@ -171,6 +171,24 @@ pub fn stream(page_url: &str) -> Result<String, String> {
     answer["url"].as_str().map(String::from).ok_or_else(|| "SoundCloud gave no stream address.".into())
 }
 
+/// A profile's picture, how many follow it, and its bio as one line: what an artist's page shows above the songs.
+pub fn profile(profile_url: &str) -> Result<(Option<String>, Option<i64>, Option<String>), String> {
+    let user = resolve(profile_url)?;
+    if user["kind"].as_str() != Some("user") {
+        return Err("That is not a SoundCloud profile.".into());
+    }
+    let avatar = user["avatar_url"].as_str().map(|a| a.replace("-large.", "-t500x500."));
+    let followers = user["followers_count"].as_i64();
+    let about = user["description"].as_str().map(|text| {
+        text.split(['\n', '\r', '\u{2028}', '\u{2029}'])
+            .map(|line| line.split_whitespace().collect::<Vec<_>>().join(" "))
+            .filter(|line| !line.is_empty())
+            .collect::<Vec<_>>()
+            .join(" · ")
+    });
+    Ok((avatar, followers, about.filter(|a| !a.is_empty())))
+}
+
 /// Why SoundCloud will not play a track here, in a sentence, from what yt-dlp or SoundCloud said; None for anything
 /// else. A refusal is the service's -- the track is locked, sold to subscribers, not offered in this country, or gone
 /// -- so the same song is worth finding on YouTube Music, where a failed connection would fail there too.

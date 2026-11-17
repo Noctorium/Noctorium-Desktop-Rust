@@ -594,6 +594,44 @@ fn local_playlist(ui: &mut egui::Ui, app: &App, id: &str, inputs: &mut Inputs, a
 fn remote_playlist(ui: &mut egui::Ui, app: &App, url: &str, inputs: &mut Inputs, actions: &mut Vec<Action>) {
     let palette = app.palette;
     back_button(ui, &palette, actions);
+    // An artist's page: their own header, and none of a playlist's following and copying.
+    if let Some(artist) = crate::artists::parse(url) {
+        let ready = match app.remote.get(url) {
+            Some(Loadable::Ready(playlist)) => Some(playlist),
+            _ => None,
+        };
+        let detail = [
+            Some(format!("On {}", artist.provider.display_name())),
+            ready.map(|p| summary(&p.tracks)),
+            ready.and_then(|p| p.owner_name.clone()),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join("  ·  ");
+        header(ui, app, ready.and_then(|p| p.artwork_url.as_deref()), "ARTIST", &artist.name, &detail);
+        match app.remote.get(url) {
+            None | Some(Loadable::Loading) => widgets::loading(ui, &palette, &format!("Finding the songs of {}…", artist.name)),
+            Some(Loadable::Failed(why)) => notice(ui, &palette, why, true),
+            Some(Loadable::Ready(playlist)) => {
+                ui.horizontal(|ui| {
+                    play_buttons(ui, app, &playlist.tracks, actions);
+                    if let Some(page) = crate::artists::page_url(&artist) {
+                        if secondary(ui, &palette, &format!("🌐  Open on {}", artist.provider.display_name())).clicked() {
+                            actions.push(Action::OpenUrl(page));
+                        }
+                    }
+                });
+                ui.add_space(10.0);
+                if playlist.tracks.is_empty() {
+                    ui.label(RichText::new(format!("{} has no songs by {} to play.", artist.provider.display_name(), artist.name)).color(palette.faint));
+                } else {
+                    track_list(ui, app, &playlist.tracks, RowPlace::List, actions);
+                }
+            }
+        }
+        return;
+    }
     match app.remote.get(url) {
         None | Some(Loadable::Loading) => {
             let known = app.library.followed.iter().find(|p| p.source_url.as_deref() == Some(url));
