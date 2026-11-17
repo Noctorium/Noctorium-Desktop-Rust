@@ -171,8 +171,17 @@ pub fn stream(page_url: &str) -> Result<String, String> {
     answer["url"].as_str().map(String::from).ok_or_else(|| "SoundCloud gave no stream address.".into())
 }
 
-/// A profile's picture, how many follow it, and its bio as one line: what an artist's page shows above the songs.
-pub fn profile(profile_url: &str) -> Result<(Option<String>, Option<i64>, Option<String>), String> {
+/// What a SoundCloud profile says of itself: what an artist's page shows above the songs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Profile {
+    pub picture: Option<String>,
+    pub followers: Option<i64>,
+    /// The bio, as one line.
+    pub about: Option<String>,
+}
+
+/// A profile's picture, how many follow it, and its bio as one line.
+pub fn profile(profile_url: &str) -> Result<Profile, String> {
     let user = resolve(profile_url)?;
     if user["kind"].as_str() != Some("user") {
         return Err("That is not a SoundCloud profile.".into());
@@ -186,7 +195,7 @@ pub fn profile(profile_url: &str) -> Result<(Option<String>, Option<i64>, Option
             .collect::<Vec<_>>()
             .join(" · ")
     });
-    Ok((avatar, followers, about.filter(|a| !a.is_empty())))
+    Ok(Profile { picture: avatar, followers, about: about.filter(|a| !a.is_empty()) })
 }
 
 /// Why SoundCloud will not play a track here, in a sentence, from what yt-dlp or SoundCloud said; None for anything

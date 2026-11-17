@@ -134,7 +134,7 @@ pub fn load(backend: &YtDlp, artist: &ArtistRef) -> Result<Playlist, String> {
     };
     // A SoundCloud profile says more about itself: its picture and how many follow it.
     let (picture, followers) = match (&artist.profile, artist.provider) {
-        (Some(profile), ProviderType::Soundcloud) => crate::soundcloud::profile(profile).map(|(a, f, _)| (a, f)).unwrap_or((None, None)),
+        (Some(profile), ProviderType::Soundcloud) => crate::soundcloud::profile(profile).map(|p| (p.picture, p.followers)).unwrap_or((None, None)),
         _ => (None, None),
     };
     Ok(Playlist {
