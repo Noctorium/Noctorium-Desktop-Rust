@@ -135,6 +135,9 @@ pub struct Settings {
     pub bandcamp_genres: Vec<String>,
     /// The services a search of all of them asks.
     pub hybrid_search: Vec<ProviderType>,
+    /// A music link pasted into the search box plays as soon as it is there, with no Enter and no Link page. Off
+    /// unless switched on.
+    pub play_links_from_search: bool,
     /// A note from the tray when a song starts.
     pub announce_tracks: bool,
     pub start_page: StartPage,
@@ -256,6 +259,7 @@ impl Default for Settings {
             spotify_device: String::new(),
             bandcamp_genres: vec!["electronic".into(), "hip-hop-rap".into(), "ambient".into()],
             hybrid_search: default_hybrid_search(),
+            play_links_from_search: false,
             announce_tracks: false,
             start_page: StartPage::default(),
             check_updates: true,

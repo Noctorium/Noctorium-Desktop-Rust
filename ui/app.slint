@@ -227,6 +227,22 @@ component PlayerBar inherits Rectangle {
                 Bridge.act("open", "nowplaying");
             }
         }
+        // The artist's name, over the bar's own: it opens their page rather than Now playing.
+        if root.s.has-track: TouchArea {
+            x: 64px;
+            y: root.mid + 1px;
+            width: min(parent.width - self.x - 36px, artist-width.preferred-width);
+            height: 18px;
+            mouse-cursor: pointer;
+            clicked => {
+                Bridge.act("artist-current", "");
+            }
+        }
+        artist-width := Text {
+            visible: false;
+            text: root.s.artist;
+            font-size: 13px;
+        }
         if root.s.has-track: IconButton {
             x: parent.width - 32px;
             y: root.mid - self.height / 2;
@@ -380,6 +396,7 @@ export component AppWindow inherits Window {
     in-out property <string> search-query;
     in property <[Shelf]> search-groups;
     in property <string> search-hint;
+    in property <string> search-kind: "music";
 
     in property <int> liked-count;
     in property <int> recent-count;
@@ -499,6 +516,7 @@ export component AppWindow inherits Window {
                         query <=> root.search-query;
                         groups: root.search-groups;
                         hint: root.search-hint;
+                        kind: root.search-kind;
                         menu(l, n, mx, my) => {
                             root.open-menu(l, n, mx, my);
                         }

@@ -583,11 +583,13 @@ export component TrackMenu inherits PopupWindow {
                 { icon: Icons.down, text: "Move down", what: "down" },
                 { icon: Icons.close, text: "Remove from the queue", what: "remove" },
                 { icon: Icons.radio, text: "Start radio", what: "radio" },
+                { icon: Icons.person, text: "Go to the artist", what: "artist" },
                 { icon: root.liked ? Icons.heart : Icons.heart-outline, text: root.liked ? "Remove from Liked songs" : "Add to Liked songs", what: "like" },
             ] : [
                 { icon: Icons.play-next, text: "Play next", what: "next" },
                 { icon: Icons.add-queue, text: "Add to queue", what: "queue" },
                 { icon: Icons.radio, text: "Start radio", what: "radio" },
+                { icon: Icons.person, text: "Go to the artist", what: "artist" },
                 { icon: root.liked ? Icons.heart : Icons.heart-outline, text: root.liked ? "Remove from Liked songs" : "Add to Liked songs", what: "like" },
             ]: Rectangle {
                 height: 34px;

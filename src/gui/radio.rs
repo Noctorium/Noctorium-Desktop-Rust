@@ -18,15 +18,18 @@ pub enum SearchKind {
     #[default]
     Music,
     Radio,
+    /// Artists by name, each opening their page on their service: see [`crate::artists`].
+    Artists,
 }
 
 impl SearchKind {
-    pub const ALL: [SearchKind; 2] = [SearchKind::Music, SearchKind::Radio];
+    pub const ALL: [SearchKind; 3] = [SearchKind::Music, SearchKind::Radio, SearchKind::Artists];
 
     pub fn display_name(self) -> &'static str {
         match self {
             SearchKind::Music => "Music",
             SearchKind::Radio => "Radio",
+            SearchKind::Artists => "Artists",
         }
     }
 
@@ -35,14 +38,16 @@ impl SearchKind {
         match self {
             SearchKind::Music => "Songs, artists and albums from your services",
             SearchKind::Radio => "Live stations from every country",
+            SearchKind::Artists => "Artists, each opening their page on their service",
         }
     }
 
-    /// Music to Radio and back.
+    /// Music, Radio, Artists and round again.
     pub fn other(self) -> SearchKind {
         match self {
             SearchKind::Music => SearchKind::Radio,
-            SearchKind::Radio => SearchKind::Music,
+            SearchKind::Radio => SearchKind::Artists,
+            SearchKind::Artists => SearchKind::Music,
         }
     }
 }
@@ -135,7 +140,17 @@ fn paint_kind(painter: &Painter, rect: Rect, kind: SearchKind, colour: Color32) 
     match kind {
         SearchKind::Music => paint_note(painter, rect, colour),
         SearchKind::Radio => paint_radio(painter, rect, colour),
+        SearchKind::Artists => paint_person(painter, rect, colour),
     }
+}
+
+/// A head and shoulders, for Artists.
+fn paint_person(painter: &Painter, rect: Rect, colour: Color32) {
+    let centre = rect.center();
+    let side = rect.width().min(rect.height());
+    painter.circle_filled(centre - vec2(0.0, side * 0.18), side * 0.2, colour);
+    let shoulders = Rect::from_center_size(centre + vec2(0.0, side * 0.3), vec2(side * 0.72, side * 0.3));
+    painter.rect_filled(shoulders, egui::CornerRadius::same((side * 0.15) as u8), colour);
 }
 
 /// A small rounded pill: an icon, a word and a caret.
@@ -352,7 +367,8 @@ pub fn logo(ui: &Ui, palette: &Palette, url: Option<&str>, rect: Rect) {
 pub fn quick_footer(kind: SearchKind, blank: bool) -> String {
     let command = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl" };
     match (kind, blank) {
-        (SearchKind::Radio, _) => format!("↑↓ choose  ·  Enter tune in  ·  {command}+F again for Music  ·  Esc close"),
+        (SearchKind::Radio, _) => format!("↑↓ choose  ·  Enter tune in  ·  {command}+F again for Artists  ·  Esc close"),
+        (SearchKind::Artists, _) => format!("Enter lists the artists on Search  ·  {command}+F again for Music  ·  Esc close"),
         (SearchKind::Music, true) => format!("{command}+F again for Radio  ·  start or end with !ytm, !sc or !yt for one service"),
         (SearchKind::Music, false) => format!("↑↓ choose  ·  Enter play  ·  {command}+F again for Radio  ·  Esc close"),
     }
@@ -370,10 +386,11 @@ mod tests {
     }
 
     #[test]
-    fn music_by_default_and_the_switch_goes_both_ways() {
+    fn music_by_default_and_the_switch_goes_round_all_three() {
         assert_eq!(SearchKind::default(), SearchKind::Music);
         assert_eq!(SearchKind::Music.other(), SearchKind::Radio);
-        assert_eq!(SearchKind::Radio.other(), SearchKind::Music);
+        assert_eq!(SearchKind::Radio.other(), SearchKind::Artists);
+        assert_eq!(SearchKind::Artists.other(), SearchKind::Music);
     }
 
     #[test]

@@ -1204,6 +1204,15 @@ fn browsing(ui: &mut Ui, app: &App, actions: &mut Vec<Action>) {
                 )
             })
         });
+        with_settings(app, actions, |s| {
+            switch(
+                ui,
+                &palette,
+                &mut s.play_links_from_search,
+                "Play links pasted into Search at once",
+                "A YouTube, YouTube Music, SoundCloud or other music link plays as soon as it is pasted, with no Enter and no Link page.",
+            )
+        });
     });
     group(ui, app, "In the sidebar", Some("Which pages the sidebar offers. Home and Settings always stay."), |ui| {
         with_looks(app, actions, |looks| {

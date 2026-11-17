@@ -784,3 +784,21 @@ pub fn theme_swatch(ui: &mut Ui, palette: &Palette, preset: &theme::ThemePreset,
     ui.painter().rect_stroke(rect, CornerRadius::same(theme::corner(10)), stroke, StrokeKind::Inside);
     response.on_hover_text(format!("{} · {}", preset.family, preset.name))
 }
+
+/// The artist's name under a song, as the way to their page: pressing it opens the artist on the service the song came
+/// from -- YouTube Music's artist for a YouTube Music song, the SoundCloud profile for a SoundCloud one -- as their
+/// songs. A hand and an underline while the pointer is on it; plain text for a song with no artist to open.
+pub fn artist_label(ui: &mut Ui, label: egui::Label, track: &crate::domain::Track, actions: &mut Vec<super::Action>) -> egui::Response {
+    let Some(artist) = crate::artists::of_track(track) else { return ui.add(label) };
+    let response = ui.add(label.sense(egui::Sense::click()));
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(egui::CursorIcon::PointingHand);
+        let y = response.rect.bottom() - 1.0;
+        ui.painter().hline(response.rect.x_range(), y, egui::Stroke::new(1.0_f32, ui.visuals().weak_text_color()));
+    }
+    let response = response.on_hover_text(format!("Open {} on {}", artist.name, artist.provider.display_name()));
+    if response.clicked() {
+        actions.push(super::Action::OpenArtist(artist));
+    }
+    response
+}

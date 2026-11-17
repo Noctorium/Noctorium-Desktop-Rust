@@ -122,6 +122,8 @@ export component SearchPage inherits Page {
     in-out property <string> query;
     in property <[Shelf]> groups;
     in property <string> hint;
+    /// "music", "radio" or "artists": what the box searches.
+    in property <string> kind: "music";
     callback menu(string, int, length, length);
     public function focus-box() {
         box.focus-input();
@@ -145,6 +147,22 @@ export component SearchPage inherits Page {
             placeholder: "Songs, artists, a link — !ytm, !sc or !yt for one service";
             accepted(text) => {
                 Bridge.search(text);
+            }
+        }
+        HorizontalLayout {
+            alignment: start;
+            spacing: 8px;
+            for option in [
+                { name: "music", text: "Music", icon: Icons.search },
+                { name: "radio", text: "Radio", icon: Icons.radio },
+                { name: "artists", text: "Artists", icon: Icons.person },
+            ]: SecondaryButton {
+                text: option.text;
+                icon: option.icon;
+                active: root.kind == option.name;
+                clicked => {
+                    Bridge.act("search-kind", option.name);
+                }
             }
         }
         if root.hint != "": Text {
@@ -662,9 +680,15 @@ export component NowPlayingPage inherits Rectangle {
             }
             Text {
                 text: root.now.artist;
-                color: Theme.p.subtext;
+                color: artist-touch.has-hover ? Theme.p.text : Theme.p.subtext;
                 font-size: 16px;
                 overflow: elide;
+                artist-touch := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        Bridge.act("artist-current", "");
+                    }
+                }
             }
             if root.now.album != "": Text {
                 text: root.now.album;

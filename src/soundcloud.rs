@@ -171,10 +171,46 @@ pub fn stream(page_url: &str) -> Result<String, String> {
     answer["url"].as_str().map(String::from).ok_or_else(|| "SoundCloud gave no stream address.".into())
 }
 
+/// Why SoundCloud will not play a track here, in a sentence, from what yt-dlp or SoundCloud said; None for anything
+/// else. A refusal is the service's -- the track is locked, sold to subscribers, not offered in this country, or gone
+/// -- so the same song is worth finding on YouTube Music, where a failed connection would fail there too.
+pub fn refusal(said: &str) -> Option<&'static str> {
+    let text = said.to_lowercase();
+    if !text.contains("soundcloud") {
+        return None;
+    }
+    if text.contains("drm") {
+        Some("SoundCloud locks this track, so it only plays in SoundCloud's own app.")
+    } else if text.contains("geo restriction") || text.contains("from your location") || text.contains("user's country") {
+        Some("SoundCloud does not offer this track in your country.")
+    } else if text.contains("go+") || text.contains("subscription") {
+        Some("This is a SoundCloud Go+ track, so only subscribers can hear it on SoundCloud.")
+    } else if text.contains("404") || text.contains("not found") {
+        Some("This track is no longer on SoundCloud.")
+    } else {
+        None
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn soundclouds_refusals_are_put_in_words() {
+        assert_eq!(
+            refusal("yt-dlp: ERROR: [soundcloud] 341471474: This video is DRM protected"),
+            Some("SoundCloud locks this track, so it only plays in SoundCloud's own app.")
+        );
+        assert_eq!(
+            refusal("ERROR: [soundcloud] This video is not available from your location due to geo restriction"),
+            Some("SoundCloud does not offer this track in your country.")
+        );
+        assert_eq!(refusal("ERROR: [soundcloud] a/b: Unable to download JSON metadata: HTTP Error 404: Not Found"), Some("This track is no longer on SoundCloud."));
+        assert_eq!(refusal("ERROR: [soundcloud] Unable to download webpage: timed out"), None);
+        assert_eq!(refusal("ERROR: [youtube] This video is DRM protected"), None);
+    }
 
     #[test]
     fn a_track_is_read_and_a_preview_left_out() {

@@ -170,6 +170,8 @@ struct Ui {
     covers: Covers,
     /// The songs behind each list the window shows, by the name Bridge.play is told.
     lists: HashMap<String, Vec<Track>>,
+    /// The artists Search listed last, opened by their place in it.
+    found_artists: Vec<crate::artists::ArtistRef>,
     /// What the models were last built from, so they are built again only when it changes.
     built: u64,
     /// The page the window last showed, so a new one starts at its top.
@@ -178,7 +180,7 @@ struct Ui {
 
 impl Ui {
     fn new(app: App, window: slint::Weak<AppWindow>, host: Host) -> Ui {
-        Ui { covers: Covers::new(host), app, window, lists: HashMap::new(), built: 0, shown_page: None }
+        Ui { covers: Covers::new(host), app, window, lists: HashMap::new(), found_artists: Vec::new(), built: 0, shown_page: None }
     }
 
     /// The app's turn, then the window brought up to date.
@@ -504,6 +506,48 @@ impl Ui {
     }
 
     fn build_search(&mut self, window: &AppWindow) {
+        window.set_search_kind(match self.app.search_kind {
+            SearchKind::Music => "music",
+            SearchKind::Radio => "radio",
+            SearchKind::Artists => "artists",
+        }.into());
+        if self.app.search_kind == SearchKind::Artists {
+            // Who was searched for, from what each service found, shown as rows that open their pages.
+            let found: Vec<(crate::domain::ProviderType, Vec<Track>)> = self
+                .app
+                .search
+                .results
+                .iter()
+                .filter_map(|(p, r)| r.as_ref().and_then(|r| r.as_ref().ok()).map(|t| (*p, t.clone())))
+                .collect();
+            self.found_artists = crate::artists::found(&self.app.search.query, &found);
+            let shown: Vec<Track> = self
+                .found_artists
+                .iter()
+                .map(|a| Track {
+                    provider: a.provider,
+                    id: crate::artists::key(a),
+                    title: a.name.clone(),
+                    artists: vec![crate::domain::Artist { id: String::new(), name: format!("Artist · {}", a.provider.display_name()), provider: a.provider }],
+                    album: None,
+                    duration_ms: None,
+                    artwork_url: a.artwork.clone(),
+                    source_url: String::new(),
+                })
+                .collect();
+            let waiting = self.app.search.results.iter().any(|(_, r)| r.is_none());
+            let group = Shelf {
+                title: "Artists".into(),
+                subtitle: if self.app.search.query.is_empty() { "".into() } else { format!("“{}”", self.app.search.query).into() },
+                list: "search:artists".into(),
+                tracks: self.items("search:artists", &shown, 30),
+                loading: waiting && shown.is_empty(),
+                error: "".into(),
+            };
+            window.set_search_hint(if self.app.search.results.is_empty() { "Press Enter to search.".into() } else if !waiting && shown.is_empty() { "No artist by that name.".into() } else { "".into() });
+            window.set_search_groups(model(vec![group]));
+            return;
+        }
         if self.app.search_kind == SearchKind::Radio {
             let stations = self.app.radio.stations.clone();
             let group = Shelf {
@@ -713,6 +757,11 @@ impl Ui {
                 Some(station) => Action::PlayStation(station),
                 None => return,
             },
+            // An artist found: their page, not a song.
+            "search:artists" => match self.found_artists.get(index) {
+                Some(artist) => Action::OpenArtist(artist.clone()),
+                None => return,
+            },
             "songs" => match self.lists.get(list) {
                 Some(tracks) => Action::PlayList { tracks: tracks.clone(), index },
                 None => return,
@@ -732,6 +781,10 @@ impl Ui {
             "next" => Action::PlayNext(track),
             "queue" => Action::AddToQueue(track),
             "radio" => Action::StartRadio(track),
+            "artist" => match crate::artists::of_track(&track) {
+                Some(artist) => Action::OpenArtist(artist),
+                None => return,
+            },
             "like" => Action::ToggleLike(track),
             "up" if list == "queue" && at > 0 => Action::QueueMove { from: at, to: at - 1 },
             "down" if list == "queue" && at + 1 < self.app.queue.tracks.len() => Action::QueueMove { from: at, to: at + 1 },
@@ -784,6 +837,15 @@ impl Ui {
             "queue-shuffle-upcoming" => Action::QueueShuffleUpcoming,
             "queue-clear-upcoming" => Action::QueueClearUpcoming,
             "queue-clear" => Action::QueueClear,
+            "artist-current" => match current().as_ref().and_then(crate::artists::of_track) {
+                Some(artist) => Action::OpenArtist(artist),
+                None => return,
+            },
+            "search-kind" => Action::SetSearchKind(match argument {
+                "radio" => SearchKind::Radio,
+                "artists" => SearchKind::Artists,
+                _ => SearchKind::Music,
+            }),
             "like-current" => match current() {
                 Some(track) => Action::ToggleLike(track),
                 None => return,

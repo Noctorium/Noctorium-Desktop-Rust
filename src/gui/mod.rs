@@ -157,6 +157,8 @@ pub enum Action {
     Back,
     Search,
     OpenLink(String),
+    /// An artist's page on their service, as their songs: see [`crate::artists`].
+    OpenArtist(crate::artists::ArtistRef),
     Follow(Playlist),
     Unfollow(String),
     TogglePlay,
@@ -385,7 +387,8 @@ impl Diagnose {
 pub enum Event {
     Search { id: u64, provider: ProviderType, result: Result<Vec<Track>, String> },
     Home { id: u64, slot: usize, row: HomeRow },
-    Resolved { request: u64, track: Track, start_ms: i64, paused: bool, result: Result<Resolved, String> },
+    /// `note` says what was done on the way: a SoundCloud song SoundCloud would not play, played from YouTube Music.
+    Resolved { request: u64, track: Track, start_ms: i64, paused: bool, result: Result<Resolved, String>, note: Option<String> },
     Engine(EngineEvent),
     Remote { url: String, result: Result<Playlist, String> },
     Link { result: Result<Track, String> },
@@ -1299,7 +1302,24 @@ impl App {
         }
     }
 
+    /// An artist's page, read on a thread into the opened lists: see [`crate::artists::load`].
+    fn load_remote_artist(&mut self, key: &str, artist: crate::artists::ArtistRef) {
+        if matches!(self.remote.get(key), Some(Loadable::Ready(_)) | Some(Loadable::Loading)) {
+            return;
+        }
+        self.remote.insert(key.to_string(), Loadable::Loading);
+        let backend = self.backend.clone();
+        let url = key.to_string();
+        self.spawn(move || Event::Remote { result: crate::artists::load(&backend, &artist), url });
+    }
+
     fn load_remote(&mut self, url: &str) {
+        if crate::artists::is_key(url) {
+            if let Some(artist) = crate::artists::parse(url) {
+                self.load_remote_artist(url, artist);
+            }
+            return;
+        }
         if matches!(self.remote.get(url), Some(Loadable::Ready(_)) | Some(Loadable::Loading)) {
             return;
         }
@@ -1806,13 +1826,34 @@ impl App {
             let track = if track.provider.is_reference() {
                 match crate::matching::find(&matches, &backend, &track) {
                     Ok(matched) => matched,
-                    Err(why) => return Event::Resolved { request, track, start_ms, paused, result: Err(why) },
+                    Err(why) => return Event::Resolved { request, track, start_ms, paused, result: Err(why), note: None },
                 }
             } else {
                 track
             };
             let result = backend.resolve_audio(&track.source_url);
-            Event::Resolved { request, track, start_ms, paused, result }
+            // A SoundCloud song SoundCloud will not play here -- locked, Go+ only, not offered in this country, or
+            // gone -- is the same song from YouTube Music, said so. Anything else fails in its own words.
+            let refusal = match (&result, track.provider) {
+                (Err(why), ProviderType::Soundcloud) => crate::soundcloud::refusal(why),
+                _ => None,
+            };
+            if let Some(reason) = refusal {
+                let elsewhere = crate::matching::find(&matches, &backend, &track)
+                    .and_then(|matched| backend.resolve_audio(&matched.source_url).map(|resolved| (matched, resolved)));
+                return match elsewhere {
+                    Ok((matched, resolved)) => Event::Resolved {
+                        request,
+                        track: matched,
+                        start_ms,
+                        paused,
+                        result: Ok(resolved),
+                        note: Some(format!("{reason} Playing it from YouTube Music instead.")),
+                    },
+                    Err(_) => Event::Resolved { request, track, start_ms, paused, result: Err(reason.to_string()), note: None },
+                };
+            }
+            Event::Resolved { request, track, start_ms, paused, result, note: None }
         });
         self.fetch_lyrics_if_open();
     }
@@ -2199,7 +2240,7 @@ impl App {
                     self.home[slot] = Some(row);
                 }
             }
-            Event::Resolved { request, track, start_ms, paused, result } => {
+            Event::Resolved { request, track, start_ms, paused, result, note } => {
                 if request != self.play_request {
                     return;
                 }
@@ -2208,6 +2249,9 @@ impl App {
                     Ok(resolved) => {
                         self.generation = self.engine.play(resolved.url, resolved.user_agent, start_ms, paused);
                         self.started(track);
+                        if let Some(note) = note {
+                            self.toast(note, false);
+                        }
                     }
                     Err(why) => self.toast(format!("{}: {why}", track.title), true),
                 }
@@ -3074,6 +3118,16 @@ impl App {
             }
             Action::Search => self.run_search(),
             Action::OpenLink(url) => self.open_link(url),
+            Action::OpenArtist(artist) => {
+                let key = crate::artists::key(&artist);
+                // A fresh read each time it is opened: an artist's songs change, and a page kept from earlier may be
+                // one that failed.
+                if !matches!(self.remote.get(&key), Some(Loadable::Loading)) {
+                    self.remote.remove(&key);
+                }
+                self.load_remote_artist(&key, artist);
+                self.open(Page::Remote(key));
+            }
             Action::Follow(playlist) => {
                 let url = playlist.source_url.clone().unwrap_or_default();
                 if !self.library.followed.iter().any(|p| p.source_url.as_deref() == Some(url.as_str())) {

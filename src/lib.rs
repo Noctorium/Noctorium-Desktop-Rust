@@ -7,6 +7,7 @@
 pub mod account;
 pub mod accounts;
 pub mod applemusic;
+pub mod artists;
 pub mod audio;
 pub mod bandcamp;
 pub mod bangs;

@@ -278,6 +278,8 @@ fn search(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<A
                 ui.label(RichText::new("🔍").color(palette.subtext));
                 let hint = if radio {
                     "A station, a city or a kind of music: “jazz”, “BBC”, “Tokyo”"
+                } else if app.search_kind == super::SearchKind::Artists {
+                    "An artist's name — !sc, !ytm, !yt, !all for where"
                 } else {
                     "Songs, artists, or a YouTube or SoundCloud link — !sc, !ytm, !yt, !all"
                 };
@@ -291,6 +293,15 @@ fn search(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<A
                 if inputs.focus_search {
                     response.request_focus();
                     inputs.focus_search = false;
+                }
+                // A music link pasted in plays at once when the listener has said so: no Enter, no Link page.
+                let pasted = inputs.search.trim();
+                if response.changed()
+                    && app.settings.play_links_from_search
+                    && (pasted.starts_with("https://") || pasted.starts_with("http://"))
+                    && crate::services::recognises(pasted)
+                {
+                    actions.push(Action::Search);
                 }
                 response
             })
@@ -337,6 +348,27 @@ fn search(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<A
             let recent: Vec<Track> = app.library.recent.iter().take(8).cloned().collect();
             track_list(ui, app, &recent, RowPlace::List, actions);
         }
+        return;
+    }
+    // Artists: who was searched for, from what each service found, as cards that open their pages.
+    if app.search_kind == super::SearchKind::Artists {
+        let found: Vec<(crate::domain::ProviderType, Vec<Track>)> =
+            app.search.results.iter().filter_map(|(p, r)| r.as_ref().and_then(|r| r.as_ref().ok()).map(|t| (*p, t.clone()))).collect();
+        let artists = crate::artists::found(&app.search.query, &found);
+        heading(ui, &palette, "Artists", Some(&format!("“{}”", app.search.query)));
+        if artists.is_empty() {
+            let waiting = app.search.results.iter().any(|(_, r)| r.is_none());
+            ui.label(RichText::new(if waiting { "Searching…" } else { "No artist by that name." }).color(palette.faint));
+            return;
+        }
+        ui.horizontal_wrapped(|ui| {
+            for artist in artists {
+                let subtitle = format!("Artist · {}", artist.provider.display_name());
+                if card(ui, &palette, artist.artwork.as_deref(), &artist.name, &subtitle).clicked() {
+                    actions.push(Action::OpenArtist(artist));
+                }
+            }
+        });
         return;
     }
     let several = app.search.results.len() > 1;
@@ -723,7 +755,7 @@ fn queue(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
                     widgets::artwork(ui, &palette, track.artwork_url.as_deref(), 36.0, 5);
                     ui.vertical(|ui| {
                         ui.add(egui::Label::new(RichText::new(&track.title).font(theme::bold(13.5))).truncate());
-                        ui.label(RichText::new(track.artist_line()).font(theme::regular(12.5)).color(palette.subtext));
+                        widgets::artist_label(ui, egui::Label::new(RichText::new(track.artist_line()).font(theme::regular(12.5)).color(palette.subtext)), track, actions);
                     });
                     ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                         if ui.small_button("Keep").on_hover_text("Add it to the queue").clicked() {
@@ -1025,7 +1057,10 @@ pub fn quick_search(app: &App, ctx: &egui::Context, quick: Option<&mut super::Qu
                         actions.push(Action::CloseQuickSearch);
                     };
                     if enter {
-                        if quick.selected < results.len() {
+                        // Artists are pages, not songs: Enter lists them on Search.
+                        if app.search_kind == super::SearchKind::Artists {
+                            actions.push(Action::QuickSearchAll(quick.text.clone()));
+                        } else if quick.selected < results.len() {
                             play(quick.selected, actions);
                         } else if radio || !quick.text.trim().is_empty() {
                             actions.push(Action::QuickSearchAll(quick.text.clone()));
@@ -1806,7 +1841,7 @@ fn now_playing(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
                 ui.set_max_width(width.min(900.0));
                 ui.add(egui::Label::new(RichText::new(&track.title).font(theme::bold((width / 14.0).clamp(36.0, 72.0))).color(palette.text)).wrap().halign(Align::Center));
                 ui.add_space(6.0);
-                ui.add(egui::Label::new(RichText::new(track.artist_line()).font(theme::regular(26.0)).color(palette.accent)).halign(Align::Center));
+                widgets::artist_label(ui, egui::Label::new(RichText::new(track.artist_line()).font(theme::regular(26.0)).color(palette.accent)).halign(Align::Center), &track, actions);
                 ui.add_space(24.0);
                 now_playing_controls(ui, app, &track, 520.0_f32.min(width), true, actions);
             });
@@ -1819,7 +1854,7 @@ fn now_playing(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
                         now_playing_cover(ui, app, &track, 240.0, CoverStyle::Rounded);
                         ui.add_space(8.0);
                         ui.add(egui::Label::new(RichText::new(&track.title).font(theme::bold(15.0)).color(palette.text)).wrap());
-                        ui.label(RichText::new(track.artist_line()).color(palette.subtext));
+                        widgets::artist_label(ui, egui::Label::new(RichText::new(track.artist_line()).color(palette.subtext)), &track, actions);
                         if let Some(album) = &track.album {
                             ui.label(RichText::new(&album.title).color(palette.faint));
                         }
@@ -2107,7 +2142,7 @@ fn now_playing_details(ui: &mut egui::Ui, app: &App, track: &Track, width: f32, 
     let palette = app.palette;
     let align = if centred { Align::Center } else { Align::Min };
     ui.add(egui::Label::new(RichText::new(&track.title).font(theme::bold(26.0)).color(palette.text)).wrap().halign(align));
-    ui.add(egui::Label::new(RichText::new(track.artist_line()).font(theme::regular(17.0)).color(palette.subtext)).halign(align));
+    widgets::artist_label(ui, egui::Label::new(RichText::new(track.artist_line()).font(theme::regular(17.0)).color(palette.subtext)).halign(align), track, actions);
     ui.horizontal(|ui| {
         if centred {
             let guess = 60.0 + track.album.as_ref().map(|a| a.title.len() as f32 * 7.0).unwrap_or(0.0);

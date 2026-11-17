@@ -216,7 +216,7 @@ fn track_block(ui: &mut egui::Ui, app: &App, rect: Rect, cover: f32, title: f32,
     let text_width = (rect.width() - cover - 12.0 - if heart { 40.0 } else { 0.0 }).max(60.0);
     row.allocate_ui_with_layout(vec2(text_width, cover.min(rect.height())), Layout::top_down(Align::Min).with_main_align(Align::Center), |ui| {
         ui.add(egui::Label::new(RichText::new(&track.title).font(theme::bold(title)).color(palette.text)).truncate());
-        ui.add(egui::Label::new(RichText::new(track.artist_line()).font(theme::regular(title - 2.0)).color(palette.subtext)).truncate());
+        super::widgets::artist_label(ui, egui::Label::new(RichText::new(track.artist_line()).font(theme::regular(title - 2.0)).color(palette.subtext)).truncate(), track, actions);
     });
     // A station has nothing to like: no heart beside it.
     if heart && !track.provider.is_radio() && app.settings.looks.shows(PlayerButton::Like) {
