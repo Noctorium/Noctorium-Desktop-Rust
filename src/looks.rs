@@ -268,6 +268,15 @@ impl TextSize {
 }
 
 choice!(
+    /// How Home is laid out. One so far, with more to come: Settings offers the choice already, so a layout added later
+    /// is one more entry here rather than a new setting.
+    HomeLayout {
+        #[default]
+        Classic => ("Classic", "The greeting, then your pinned songs, what you played last and each service's rows of cards."),
+    }
+);
+
+choice!(
     /// How big the covers on Home and in the library are.
     CardSize {
         Compact => ("Compact", ""),
@@ -619,6 +628,7 @@ pub struct Looks {
     pub animations: bool,
     pub text_size: TextSize,
     pub card_size: CardSize,
+    pub home_layout: HomeLayout,
     pub badge_policy: BadgePolicy,
     pub hover_controls: HoverControls,
     pub time_display: TimeDisplay,
@@ -665,6 +675,7 @@ impl Default for Looks {
             animations: true,
             text_size: TextSize::default(),
             card_size: CardSize::default(),
+            home_layout: HomeLayout::default(),
             badge_policy: BadgePolicy::default(),
             hover_controls: HoverControls::default(),
             time_display: TimeDisplay::default(),

@@ -280,6 +280,8 @@ fn search(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<A
                     "A station, a city or a kind of music: “jazz”, “BBC”, “Tokyo”"
                 } else if app.search_kind == super::SearchKind::Artists {
                     "An artist's name — !sc, !ytm, !yt, !all for where"
+                } else if app.search_kind == super::SearchKind::Playlists {
+                    "A playlist's name or a mood: “lofi”, “gym”, “90s hits”"
                 } else {
                     "Songs, artists, or a YouTube or SoundCloud link — !sc, !ytm, !yt, !all"
                 };
@@ -340,6 +342,19 @@ fn search(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<A
     }
     ui.add_space(12.0);
 
+    // Playlists: cards that open as playlists do.
+    if app.search_kind == super::SearchKind::Playlists && !app.search.query.is_empty() {
+        heading(ui, &palette, "Playlists", Some(&format!("“{}” on YouTube Music and SoundCloud", app.search.query)));
+        match &app.search.playlists {
+            None => widgets::loading(ui, &palette, "Searching…"),
+            Some(Err(why)) => notice(ui, &palette, why, true),
+            Some(Ok(found)) if found.is_empty() => {
+                ui.label(RichText::new("No playlists by that name.").color(palette.faint));
+            }
+            Some(Ok(found)) => playlist_cards(ui, app, found, actions),
+        }
+        return;
+    }
     if app.search.results.is_empty() {
         if app.library.recent.is_empty() {
             ui.label(RichText::new("Type and press Enter. A bang at the start or the end sends the search to one service.").color(palette.faint));
@@ -393,15 +408,55 @@ fn search(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<A
     }
 }
 
+/// Playlists and albums as cards, wrapping, each opening by its link as a playlist does.
+fn playlist_cards(ui: &mut egui::Ui, app: &App, lists: &[crate::domain::Playlist], actions: &mut Vec<Action>) {
+    let palette = app.palette;
+    ui.horizontal_wrapped(|ui| {
+        for list in lists {
+            let Some(link) = list.source_url.clone() else { continue };
+            let subtitle = [list.owner_name.clone(), Some(list.provider.display_name().to_string())]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · ");
+            if card(ui, &palette, list.artwork_url.as_deref(), &list.title, &subtitle).clicked() {
+                actions.push(Action::OpenLink(link));
+            }
+        }
+    });
+}
+
 fn library(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<Action>) {
     let palette = app.palette;
     ui.label(RichText::new("Library").font(theme::bold(28.0)).color(palette.text));
     ui.add_space(12.0);
-    card_strip(ui, "library-collections", |ui| {
-        let liked_art = app.library.liked.first().and_then(|t| t.artwork_url.as_deref());
-        if card(ui, &palette, liked_art, "Liked songs", &format!("{} songs", app.library.liked.len())).clicked() {
+    // Liked songs first, as wide cards of their own: Noctorium's, then each signed-in service's.
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = egui::vec2(12.0, 12.0);
+        if widgets::liked_card(ui, &palette, "Liked songs", &format!("Noctorium · {} songs", app.library.liked.len())).clicked() {
             actions.push(Action::Open(Page::Liked));
         }
+        let lib = &app.service_library;
+        for (provider, signed_in, likes) in [
+            (crate::domain::ProviderType::YoutubeMusic, app.youtube.is_some(), &lib.youtube_likes),
+            (crate::domain::ProviderType::Soundcloud, app.soundcloud.is_some(), &lib.soundcloud_likes),
+        ] {
+            if !signed_in {
+                continue;
+            }
+            let count = match likes {
+                Some(Ok(tracks)) => format!("{} · {} songs", provider.display_name(), tracks.len()),
+                Some(Err(_)) => format!("{} · could not be read", provider.display_name()),
+                None => format!("{} · reading…", provider.display_name()),
+            };
+            let name = if provider == crate::domain::ProviderType::YoutubeMusic { "Liked Music" } else { "Liked tracks" };
+            if widgets::liked_card(ui, &palette, name, &count).clicked() {
+                actions.push(Action::Open(Page::ServiceLikes(provider)));
+            }
+        }
+    });
+    ui.add_space(12.0);
+    card_strip(ui, "library-collections", |ui| {
         let recent_art = app.library.recent.first().and_then(|t| t.artwork_url.as_deref());
         if card(ui, &palette, recent_art, "Recently played", &format!("{} songs", app.library.recent.len())).clicked() {
             actions.push(Action::Open(Page::Recent));
@@ -623,6 +678,22 @@ fn remote_playlist(ui: &mut egui::Ui, app: &App, url: &str, inputs: &mut Inputs,
                     }
                 });
                 ui.add_space(10.0);
+                // Their most played first, then their albums and playlists row by row, then the rest of their songs.
+                let extras = app.artist_extras.get(url);
+                let popular: Vec<Track> = extras.map(|e| e.popular.clone()).unwrap_or_default();
+                if !popular.is_empty() {
+                    heading(ui, &palette, "Popular", None);
+                    ui.push_id("artist-popular", |ui| track_list(ui, app, &popular, RowPlace::List, actions));
+                    ui.add_space(8.0);
+                }
+                for (i, (title, lists)) in extras.map(|e| e.rows.clone()).unwrap_or_default().iter().enumerate() {
+                    heading(ui, &palette, title, None);
+                    ui.push_id(("artist-row", i), |ui| playlist_cards(ui, app, lists, actions));
+                    ui.add_space(8.0);
+                }
+                if !popular.is_empty() || extras.is_some_and(|e| !e.rows.is_empty()) {
+                    heading(ui, &palette, "Songs", None);
+                }
                 if playlist.tracks.is_empty() {
                     ui.label(RichText::new(format!("{} has no songs by {} to play.", artist.provider.display_name(), artist.name)).color(palette.faint));
                 } else {
@@ -1095,8 +1166,8 @@ pub fn quick_search(app: &App, ctx: &egui::Context, quick: Option<&mut super::Qu
                         actions.push(Action::CloseQuickSearch);
                     };
                     if enter {
-                        // Artists are pages, not songs: Enter lists them on Search.
-                        if app.search_kind == super::SearchKind::Artists {
+                        // Artists and playlists are pages, not songs: Enter lists them on Search.
+                        if matches!(app.search_kind, super::SearchKind::Artists | super::SearchKind::Playlists) {
                             actions.push(Action::QuickSearchAll(quick.text.clone()));
                         } else if quick.selected < results.len() {
                             play(quick.selected, actions);
@@ -1226,23 +1297,16 @@ fn service_library(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
     use crate::domain::ProviderType;
     let palette = app.palette;
     let lib = &app.service_library;
-    for (provider, signed_in, likes, playlists) in [
-        (ProviderType::YoutubeMusic, app.youtube.is_some(), &lib.youtube_likes, &lib.youtube_playlists),
-        (ProviderType::Soundcloud, app.soundcloud.is_some(), &lib.soundcloud_likes, &lib.soundcloud_playlists),
+    for (provider, signed_in, playlists) in [
+        (ProviderType::YoutubeMusic, app.youtube.is_some(), &lib.youtube_playlists),
+        (ProviderType::Soundcloud, app.soundcloud.is_some(), &lib.soundcloud_playlists),
     ] {
         if !signed_in {
             continue;
         }
         heading(ui, &palette, &format!("Your {}", provider.display_name()), None);
+        // Their liked songs head the library, above.
         card_strip(ui, ("service", provider.key_name()), |ui| {
-            let (art, count) = match likes {
-                Some(Ok(tracks)) => (tracks.first().and_then(|t| t.artwork_url.clone()), format!("{} songs", tracks.len())),
-                Some(Err(_)) => (None, "Could not be read".to_string()),
-                None => (None, "Reading…".to_string()),
-            };
-            if card(ui, &palette, art.as_deref(), "Liked songs", &count).clicked() {
-                actions.push(Action::Open(Page::ServiceLikes(provider)));
-            }
             for playlist in playlists {
                 let Some(url) = &playlist.source_url else { continue };
                 let subtitle = playlist.owner_name.clone().unwrap_or_default();

@@ -530,6 +530,7 @@ const INDEX: &[Entry] = &[
     e(P::NowPlaying, "Visualiser", Some("Visualiser and playlist layout"), "Bars or a level meter drawn from the sound itself.", "visualizer spectrum analyser analyzer audio bars vu meter level meter sound bars"),
     e(P::NowPlaying, "Playlist layout columns", Some("Visualiser and playlist layout"), "Which columns the Playlist layout's table has, and its status bar.", "queue columns table columns playlist columns status bar codec bitrate"),
     e(P::NowPlaying, "Lyrics look", Some("Lyrics"), "How big the lyrics are, how they are aligned, and whether the other lines dim.", "lyrics size lyric font size alignment centre center left dim fade karaoke"),
+    e(P::Browsing, "Home layout", Some("Home layout"), "How Home is laid out: Classic, with more layouts to come.", "home layout home style home design layouts home page look"),
     e(P::Browsing, "Card size", Some("Browsing"), "How big the covers on Home and in the library are.", "tile size thumbnail size grid size covers"),
     e(P::Browsing, "Service badges", Some("Browsing"), "Whether a cover carries the mark of the service it comes from.", "badges icons on covers logos"),
     e(P::Browsing, "Play and menu buttons", Some("Browsing"), "Whether a card's buttons are always there or only when pointed at.", "hover buttons card buttons"),
@@ -1159,6 +1160,9 @@ fn now_playing(ui: &mut Ui, app: &App, actions: &mut Vec<Action>) {
 fn browsing(ui: &mut Ui, app: &App, actions: &mut Vec<Action>) {
     use crate::bangs::SearchMode;
     let palette = app.palette;
+    group(ui, app, "Home layout", Some("How Home is laid out. More layouts are on their way."), |ui| {
+        with_looks(app, actions, |looks| choices(ui, &palette, "Layout", &mut looks.home_layout));
+    });
     group(ui, app, "Browsing", Some("Cards, the badges on them and their buttons."), |ui| {
         with_looks(app, actions, |looks| {
             let mut changed = choices(ui, &palette, "Card size", &mut looks.card_size);

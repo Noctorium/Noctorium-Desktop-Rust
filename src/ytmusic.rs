@@ -5,7 +5,7 @@
 //! `YouTubeMusic` client does: the WEB_REMIX client, the "Songs" filter, and rows read column by column.
 //! yt-dlp stays the fallback for when this does not answer.
 
-use crate::domain::{Album, Artist, ProviderType, Track};
+use crate::domain::{Album, Artist, Playlist, ProviderType, Track};
 use regex::Regex;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -13,6 +13,10 @@ use std::time::Duration;
 const ORIGIN: &str = "https://music.youtube.com";
 /// YouTube Music's own filter for the "Songs" tab, so albums, artists and playlists stay out.
 const SONGS_ONLY: &str = "EgWKAQIIAWoKEAkQBRAKEAMQBA==";
+/// The same filter for the "Playlists" tab.
+const PLAYLISTS_ONLY: &str = "EgWKAQIoAWoKEAkQBRAKEAMQBA==";
+/// The same filter for the "Albums" tab.
+const ALBUMS_ONLY: &str = "EgWKAQIYAWoKEAkQBRAKEAMQBA==";
 const FIELD_SEPARATOR: &str = "•";
 const NAME_SEPARATORS: [&str; 3] = [",", "&", "/"];
 /// Used only when the page cannot be read for the current one; the interface accepts versions for months.
@@ -86,6 +90,67 @@ pub fn search_songs(query: &str, limit: usize) -> Result<Vec<Track>, String> {
     }
     let body = post("search", serde_json::json!({"query": query, "params": SONGS_ONLY}))?;
     Ok(parse_songs(&body).into_iter().take(limit).collect())
+}
+
+/// Playlists for `query`, as YouTube Music's own Playlists tab lists them: its own and the community's.
+pub fn search_playlists(query: &str, limit: usize) -> Result<Vec<Playlist>, String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(vec![]);
+    }
+    let body = post("search", serde_json::json!({"query": query, "params": PLAYLISTS_ONLY}))?;
+    Ok(parse_lists(&body, false).into_iter().take(limit).collect())
+}
+
+/// Albums for `query`, as YouTube Music's Albums tab lists them, each opening as its playlist of songs.
+pub fn search_albums(query: &str, limit: usize) -> Result<Vec<Playlist>, String> {
+    let query = query.trim();
+    if query.is_empty() {
+        return Ok(vec![]);
+    }
+    let body = post("search", serde_json::json!({"query": query, "params": ALBUMS_ONLY}))?;
+    Ok(parse_lists(&body, true).into_iter().take(limit).collect())
+}
+
+/// The playlists (or, with `albums`, the albums) of a search answer: rows whose title opens a list, with whose it is
+/// from the second column -- "Playlist • Lo-fi Girl • 1.2M views", "Album • Daft Punk • 2013".
+pub fn parse_lists(body: &serde_json::Value, albums: bool) -> Vec<Playlist> {
+    let mut rows = Vec::new();
+    collect(body, "musicResponsiveListItemRenderer", &mut rows);
+    let mut seen = std::collections::HashSet::new();
+    rows.into_iter()
+        .filter_map(|row| {
+            let columns: Vec<&serde_json::Value> = row["flexColumns"]
+                .as_array()?
+                .iter()
+                .map(|c| &c["musicResponsiveListItemFlexColumnRenderer"])
+                .collect();
+            let title = runs_text(&columns.first()?["text"])?;
+            let id = if albums {
+                // An album's songs are a playlist of their own, which the play button names.
+                let mut found = Vec::new();
+                collect(row, "watchPlaylistEndpoint", &mut found);
+                found.iter().find_map(|e| e["playlistId"].as_str()).map(String::from)?
+            } else {
+                row["navigationEndpoint"]["browseEndpoint"]["browseId"].as_str()?.strip_prefix("VL")?.to_string()
+            };
+            let owner = fields_of(&columns.get(1)?["text"]["runs"])
+                .into_iter()
+                .flatten()
+                .find(|f| f != "Playlist" && f != "Album" && f != "Single" && f != "EP" && !f.ends_with("views") && f.parse::<u32>().is_err());
+            let artwork = last_thumbnail(&row["thumbnail"]["musicThumbnailRenderer"]["thumbnail"]["thumbnails"]);
+            seen.insert(id.clone()).then(|| Playlist {
+                source_url: Some(format!("{ORIGIN}/playlist?list={id}")),
+                id,
+                title,
+                provider: ProviderType::YoutubeMusic,
+                owner_name: owner,
+                artwork_url: artwork,
+                tracks: vec![],
+                track_count: None,
+            })
+        })
+        .collect()
 }
 
 /// The radio YouTube Music plays after `video_id`.

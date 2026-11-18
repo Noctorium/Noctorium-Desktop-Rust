@@ -391,6 +391,8 @@ pub enum Event {
     Resolved { request: u64, track: Track, start_ms: i64, paused: bool, result: Result<Resolved, String>, note: Option<String> },
     Engine(EngineEvent),
     Remote { url: String, result: Result<Playlist, String> },
+    ArtistExtras { key: String, extras: crate::artists::Extras },
+    Playlists { id: u64, result: Result<Vec<Playlist>, String> },
     Link { result: Result<Track, String> },
     Radio { seed: String, result: Result<Vec<Track>, String> },
     Stations { id: u64, result: Result<Vec<Track>, String> },
@@ -544,6 +546,8 @@ pub struct SearchState {
     pub query: String,
     pub mode: Option<SearchMode>,
     pub results: Vec<ProviderResults>,
+    /// A Playlists search's answer: None while it is asked.
+    pub playlists: Option<Result<Vec<Playlist>, String>>,
 }
 
 pub enum Loadable<T> {
@@ -638,6 +642,8 @@ pub struct App {
     pub home: Vec<Option<HomeRow>>,
     home_id: u64,
     pub remote: HashMap<String, Loadable<Playlist>>,
+    /// What artists' pages show besides their songs, by the page's key: see [`crate::artists::extras`].
+    pub artist_extras: HashMap<String, crate::artists::Extras>,
 
     /// The newest ask for a stream address; older answers are thrown away.
     play_request: u64,
@@ -905,6 +911,7 @@ impl App {
             home: Vec::new(),
             home_id: 0,
             remote: HashMap::new(),
+            artist_extras: HashMap::new(),
             play_request: 0,
             resolving: None,
             generation: 0,
@@ -1218,11 +1225,19 @@ impl App {
             crate::services::provider_for(mode)
         };
         let id = self.fresh_id();
+        if self.search_kind == SearchKind::Playlists {
+            self.search = SearchState { id, query: parsed.query.clone(), mode: Some(mode), results: vec![], playlists: None };
+            let query = parsed.query.clone();
+            self.spawn(move || Event::Playlists { id, result: crate::artists::search_playlists(&query, 12) });
+            self.open(Page::Search);
+            return;
+        }
         self.search = SearchState {
             id,
             query: parsed.query.clone(),
             mode: Some(mode),
             results: providers.iter().map(|p| (*p, None)).collect(),
+            playlists: None,
         };
         for provider in providers {
             let backend = self.backend.clone();
@@ -1310,6 +1325,8 @@ impl App {
         self.remote.insert(key.to_string(), Loadable::Loading);
         let backend = self.backend.clone();
         let url = key.to_string();
+        let (for_extras, extras_key) = (artist.clone(), key.to_string());
+        self.spawn(move || Event::ArtistExtras { extras: crate::artists::extras(&for_extras), key: extras_key });
         self.spawn(move || Event::Remote { result: crate::artists::load(&backend, &artist), url });
     }
 
@@ -2234,6 +2251,14 @@ impl App {
                         slot.1 = Some(result);
                     }
                 }
+            }
+            Event::Playlists { id, result } => {
+                if id == self.search.id {
+                    self.search.playlists = Some(result);
+                }
+            }
+            Event::ArtistExtras { key, extras } => {
+                self.artist_extras.insert(key, extras);
             }
             Event::Home { id, slot, row } => {
                 if id == self.home_id && slot < self.home.len() {

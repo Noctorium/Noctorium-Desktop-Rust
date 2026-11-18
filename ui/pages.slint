@@ -25,6 +25,8 @@ export struct SongsPage {
     tracks: [TrackItem],
     loading: bool,
     error: string,
+    /// Rows under the songs: an artist's most played above, and their albums and playlists.
+    groups: [Shelf],
 }
 
 export struct LyricLine {
@@ -156,6 +158,7 @@ export component SearchPage inherits Page {
                 { name: "music", text: "Music", icon: Icons.search },
                 { name: "radio", text: "Radio", icon: Icons.radio },
                 { name: "artists", text: "Artists", icon: Icons.person },
+                { name: "playlists", text: "Playlists", icon: Icons.queue },
             ]: SecondaryButton {
                 text: option.text;
                 icon: option.icon;
@@ -446,6 +449,27 @@ export component SongsPageView inherits Page {
             text: "No songs here yet.";
             color: Theme.p.faint;
             font-size: 13.5px;
+        }
+        for group in root.songs.groups: VerticalLayout {
+            spacing: 6px;
+            Heading {
+                title: group.title;
+                subtitle: group.subtitle;
+                size: 18px;
+            }
+            for track[i] in group.tracks: TrackRow {
+                track: track;
+                index: i;
+                list: group.list;
+                menu(l, n, mx, my) => {
+                    root.menu(l, n, mx, my);
+                }
+            }
+        }
+        if root.songs.groups.length > 0 && root.songs.tracks.length > 0: Heading {
+            title: "Songs";
+            subtitle: "";
+            size: 18px;
         }
         VerticalLayout {
             spacing: 2px;

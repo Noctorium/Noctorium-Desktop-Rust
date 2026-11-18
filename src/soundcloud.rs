@@ -6,7 +6,7 @@
 //! Tracks SoundCloud only lets subscribers hear in full (its "SNIP" policy) are left out: they play thirty
 //! seconds and stop, which reads as a broken player.
 
-use crate::domain::{Artist, ProviderType, Track};
+use crate::domain::{Artist, Playlist, ProviderType, Track};
 use regex::Regex;
 use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
@@ -178,6 +178,55 @@ pub struct Profile {
     pub followers: Option<i64>,
     /// The bio, as one line.
     pub about: Option<String>,
+}
+
+/// A set -- an album or a playlist -- as a playlist that opens by its link.
+fn set_of(set: &serde_json::Value) -> Option<Playlist> {
+    let id = set["id"].as_u64()?.to_string();
+    let title = set["title"].as_str().filter(|t| !t.trim().is_empty())?.to_string();
+    let page = set["permalink_url"].as_str().filter(|p| p.starts_with("http"))?.to_string();
+    let artwork = set["artwork_url"]
+        .as_str()
+        .or_else(|| set["tracks"].as_array()?.iter().find_map(|t| t["artwork_url"].as_str()))
+        .map(bigger_artwork);
+    Some(Playlist {
+        id,
+        title,
+        provider: ProviderType::Soundcloud,
+        owner_name: set["user"]["username"].as_str().map(String::from),
+        artwork_url: artwork,
+        tracks: vec![],
+        source_url: Some(page),
+        track_count: set["track_count"].as_i64(),
+    })
+}
+
+fn sets_in(page: &serde_json::Value) -> Vec<Playlist> {
+    page["collection"].as_array().into_iter().flatten().filter_map(set_of).collect()
+}
+
+/// Playlists and albums for `query`, as SoundCloud's own search lists them.
+pub fn search_playlists(query: &str, limit: usize) -> Result<Vec<Playlist>, String> {
+    let q = crate::ytdlp::percent_encode(query.trim());
+    Ok(sets_in(&get_json(&format!("/search/playlists?q={q}&limit={limit}"))?))
+}
+
+/// What a profile's page lists besides its newest tracks: its most played tracks, its albums and its playlists.
+pub struct Collections {
+    pub popular: Vec<Track>,
+    pub albums: Vec<Playlist>,
+    pub playlists: Vec<Playlist>,
+}
+
+pub fn collections(profile_url: &str) -> Result<Collections, String> {
+    let user = resolve(profile_url)?;
+    let id = user["id"].as_u64().ok_or("That is not a SoundCloud profile.")?;
+    let part = |path: &str| get_json(&format!("/users/{id}/{path}?limit=20&linked_partitioning=1")).unwrap_or_default();
+    Ok(Collections {
+        popular: tracks_in(&part("toptracks")),
+        albums: sets_in(&part("albums")),
+        playlists: sets_in(&part("playlists_without_albums")),
+    })
 }
 
 /// A profile's picture, how many follow it, and its bio as one line.

@@ -20,16 +20,19 @@ pub enum SearchKind {
     Radio,
     /// Artists by name, each opening their page on their service: see [`crate::artists`].
     Artists,
+    /// Playlists by name, from YouTube Music and SoundCloud, each opening as a playlist does.
+    Playlists,
 }
 
 impl SearchKind {
-    pub const ALL: [SearchKind; 3] = [SearchKind::Music, SearchKind::Radio, SearchKind::Artists];
+    pub const ALL: [SearchKind; 4] = [SearchKind::Music, SearchKind::Radio, SearchKind::Artists, SearchKind::Playlists];
 
     pub fn display_name(self) -> &'static str {
         match self {
             SearchKind::Music => "Music",
             SearchKind::Radio => "Radio",
             SearchKind::Artists => "Artists",
+            SearchKind::Playlists => "Playlists",
         }
     }
 
@@ -39,15 +42,17 @@ impl SearchKind {
             SearchKind::Music => "Songs, artists and albums from your services",
             SearchKind::Radio => "Live stations from every country",
             SearchKind::Artists => "Artists, each opening their page on their service",
+            SearchKind::Playlists => "Playlists from YouTube Music and SoundCloud",
         }
     }
 
-    /// Music, Radio, Artists and round again.
+    /// Music, Radio, Artists, Playlists and round again.
     pub fn other(self) -> SearchKind {
         match self {
             SearchKind::Music => SearchKind::Radio,
             SearchKind::Radio => SearchKind::Artists,
-            SearchKind::Artists => SearchKind::Music,
+            SearchKind::Artists => SearchKind::Playlists,
+            SearchKind::Playlists => SearchKind::Music,
         }
     }
 }
@@ -141,7 +146,19 @@ fn paint_kind(painter: &Painter, rect: Rect, kind: SearchKind, colour: Color32) 
         SearchKind::Music => paint_note(painter, rect, colour),
         SearchKind::Radio => paint_radio(painter, rect, colour),
         SearchKind::Artists => paint_person(painter, rect, colour),
+        SearchKind::Playlists => paint_list(painter, rect, colour),
     }
+}
+
+/// Three lines and a note, for Playlists.
+fn paint_list(painter: &Painter, rect: Rect, colour: Color32) {
+    let side = rect.width().min(rect.height());
+    let left = rect.center().x - side * 0.4;
+    for (i, width) in [0.62_f32, 0.62, 0.4].iter().enumerate() {
+        let y = rect.center().y - side * 0.28 + i as f32 * side * 0.24;
+        painter.line_segment([pos2(left, y), pos2(left + side * width, y)], Stroke::new((side * 0.1).max(1.5), colour));
+    }
+    painter.circle_filled(pos2(rect.center().x + side * 0.28, rect.center().y + side * 0.24), side * 0.13, colour);
 }
 
 /// A head and shoulders, for Artists.
@@ -368,7 +385,8 @@ pub fn quick_footer(kind: SearchKind, blank: bool) -> String {
     let command = if cfg!(target_os = "macos") { "⌘" } else { "Ctrl" };
     match (kind, blank) {
         (SearchKind::Radio, _) => format!("↑↓ choose  ·  Enter tune in  ·  {command}+F again for Artists  ·  Esc close"),
-        (SearchKind::Artists, _) => format!("Enter lists the artists on Search  ·  {command}+F again for Music  ·  Esc close"),
+        (SearchKind::Artists, _) => format!("Enter lists the artists on Search  ·  {command}+F again for Playlists  ·  Esc close"),
+        (SearchKind::Playlists, _) => format!("Enter lists the playlists on Search  ·  {command}+F again for Music  ·  Esc close"),
         (SearchKind::Music, true) => format!("{command}+F again for Radio  ·  start or end with !ytm, !sc or !yt for one service"),
         (SearchKind::Music, false) => format!("↑↓ choose  ·  Enter play  ·  {command}+F again for Radio  ·  Esc close"),
     }
@@ -390,7 +408,8 @@ mod tests {
         assert_eq!(SearchKind::default(), SearchKind::Music);
         assert_eq!(SearchKind::Music.other(), SearchKind::Radio);
         assert_eq!(SearchKind::Radio.other(), SearchKind::Artists);
-        assert_eq!(SearchKind::Artists.other(), SearchKind::Music);
+        assert_eq!(SearchKind::Artists.other(), SearchKind::Playlists);
+        assert_eq!(SearchKind::Playlists.other(), SearchKind::Music);
     }
 
     #[test]

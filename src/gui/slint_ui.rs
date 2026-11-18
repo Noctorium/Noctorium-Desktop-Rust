@@ -13,7 +13,7 @@ slint::include_modules!();
 
 use super::host::{Host, WindowCommand, WindowHost};
 use super::{Action, App, Loadable, Page, SearchKind};
-use crate::domain::{format_duration, ProviderType, Track};
+use crate::domain::{format_duration, Playlist, ProviderType, Track};
 use crate::mpv::Status;
 use crate::queue::RepeatMode;
 use crate::store::Places;
@@ -172,6 +172,8 @@ struct Ui {
     lists: HashMap<String, Vec<Track>>,
     /// The artists Search listed last, opened by their place in it.
     found_artists: Vec<crate::artists::ArtistRef>,
+    /// Playlists shown as rows -- a Playlists search's, an artist's albums and playlists -- by list, opened by place.
+    shown_lists: HashMap<String, Vec<Playlist>>,
     /// What the models were last built from, so they are built again only when it changes.
     built: u64,
     /// The page the window last showed, so a new one starts at its top.
@@ -180,7 +182,7 @@ struct Ui {
 
 impl Ui {
     fn new(app: App, window: slint::Weak<AppWindow>, host: Host) -> Ui {
-        Ui { covers: Covers::new(host), app, window, lists: HashMap::new(), found_artists: Vec::new(), built: 0, shown_page: None }
+        Ui { covers: Covers::new(host), app, window, lists: HashMap::new(), found_artists: Vec::new(), shown_lists: HashMap::new(), built: 0, shown_page: None }
     }
 
     /// The app's turn, then the window brought up to date.
@@ -458,6 +460,29 @@ impl Ui {
         model(items)
     }
 
+    /// Playlists as rows of a list -- their cover, their name, whose and where from -- kept to be opened by place.
+    fn list_rows(&mut self, list: &str, lists: &[Playlist]) -> ModelRc<TrackItem> {
+        let rows: Vec<Track> = lists
+            .iter()
+            .map(|p| Track {
+                provider: p.provider,
+                id: p.source_url.clone().unwrap_or_default(),
+                title: p.title.clone(),
+                artists: vec![crate::domain::Artist {
+                    id: String::new(),
+                    name: [p.owner_name.clone(), Some(p.provider.display_name().to_string())].into_iter().flatten().collect::<Vec<_>>().join(" · "),
+                    provider: p.provider,
+                }],
+                album: None,
+                duration_ms: None,
+                artwork_url: p.artwork_url.clone(),
+                source_url: String::new(),
+            })
+            .collect();
+        self.shown_lists.insert(list.to_string(), lists.to_vec());
+        self.items(list, &rows, usize::MAX)
+    }
+
     fn shelf(&mut self, list: &str, title: &str, subtitle: &str, tracks: &[Track]) -> Shelf {
         Shelf { title: title.into(), subtitle: subtitle.into(), list: list.into(), tracks: self.items(list, tracks, 20), loading: false, error: "".into() }
     }
@@ -510,7 +535,28 @@ impl Ui {
             SearchKind::Music => "music",
             SearchKind::Radio => "radio",
             SearchKind::Artists => "artists",
+            SearchKind::Playlists => "playlists",
         }.into());
+        if self.app.search_kind == SearchKind::Playlists {
+            let (loading, error, found) = match &self.app.search.playlists {
+                None => (!self.app.search.query.is_empty(), String::new(), vec![]),
+                Some(Err(why)) => (false, why.clone(), vec![]),
+                Some(Ok(found)) => (false, String::new(), found.clone()),
+            };
+            let tracks = self.list_rows("search:playlists", &found);
+            let group = Shelf {
+                title: "Playlists".into(),
+                subtitle: if self.app.search.query.is_empty() { "".into() } else { format!("“{}” on YouTube Music and SoundCloud", self.app.search.query).into() },
+                list: "search:playlists".into(),
+                tracks,
+                loading,
+                error: error.into(),
+            };
+            let none = !loading && found.is_empty() && self.app.search.playlists.is_some();
+            window.set_search_hint(if self.app.search.query.is_empty() { "Press Enter to search.".into() } else if none { "No playlists by that name.".into() } else { "".into() });
+            window.set_search_groups(model(vec![group]));
+            return;
+        }
         if self.app.search_kind == SearchKind::Artists {
             // Who was searched for, from what each service found, shown as rows that open their pages.
             let found: Vec<(crate::domain::ProviderType, Vec<Track>)> = self
@@ -636,8 +682,24 @@ impl Ui {
             }
             _ => unreachable!("only pages of songs come here"),
         };
+        // An artist's page: their most played, and their albums and playlists, above their songs.
+        let mut groups = Vec::new();
+        if let Page::Remote(url) = page {
+            if let Some(extras) = self.app.artist_extras.get(url).cloned() {
+                if !extras.popular.is_empty() {
+                    let tracks = self.items("artist:popular", &extras.popular, usize::MAX);
+                    groups.push(Shelf { title: "Popular".into(), subtitle: "".into(), list: "artist:popular".into(), tracks, loading: false, error: "".into() });
+                }
+                for (i, (title, lists)) in extras.rows.iter().enumerate() {
+                    let list = format!("artist:row:{i}");
+                    let tracks = self.list_rows(&list, lists);
+                    groups.push(Shelf { title: title.clone().into(), subtitle: "".into(), list: list.into(), tracks, loading: false, error: "".into() });
+                }
+            }
+        }
         let image = art.and_then(|url| self.covers.get(&url, true));
         let songs = SongsPage {
+            groups: model(groups),
             kind: kind.into(),
             title: title.into(),
             detail: detail.into(),
@@ -762,6 +824,11 @@ impl Ui {
                 Some(artist) => Action::OpenArtist(artist.clone()),
                 None => return,
             },
+            // A playlist or an album shown as a row: it opens, as a link to it does.
+            list if self.shown_lists.contains_key(list) => match self.shown_lists.get(list).and_then(|l| l.get(index)).and_then(|p| p.source_url.clone()) {
+                Some(link) => Action::OpenLink(link),
+                None => return,
+            },
             "songs" => match self.lists.get(list) {
                 Some(tracks) => Action::PlayList { tracks: tracks.clone(), index },
                 None => return,
@@ -844,6 +911,7 @@ impl Ui {
             "search-kind" => Action::SetSearchKind(match argument {
                 "radio" => SearchKind::Radio,
                 "artists" => SearchKind::Artists,
+                "playlists" => SearchKind::Playlists,
                 _ => SearchKind::Music,
             }),
             "like-current" => match current() {

@@ -609,6 +609,41 @@ pub fn services_in(tracks: &[Track]) -> usize {
 }
 
 /// A card: a cover, a title and a line under it. Answers whether it was clicked.
+/// Liked songs as the library heads them: a wide card in the accent, a heart, the collection's name and whose it is.
+pub fn liked_card(ui: &mut Ui, palette: &Palette, title: &str, subtitle: &str) -> egui::Response {
+    let width = ui.available_width().clamp(240.0, 420.0);
+    let (rect, response) = ui.allocate_exact_size(vec2(width, 88.0), Sense::click());
+    let painter = ui.painter();
+    let corner = CornerRadius::same(theme::corner(16));
+    // The accent fading into the card colour, left to right, as a gradient of thin bands.
+    let bands = 24;
+    for i in 0..bands {
+        let t = i as f32 / (bands - 1) as f32;
+        let colour = palette.accent.lerp_to_gamma(palette.card, t * 0.75);
+        let left = rect.left() + rect.width() * i as f32 / bands as f32;
+        let right = rect.left() + rect.width() * (i + 1) as f32 / bands as f32 + 1.0;
+        let band = Rect::from_min_max(pos2(left, rect.top()), pos2(right.min(rect.right()), rect.bottom()));
+        let rounding = if i == 0 {
+            CornerRadius { nw: corner.nw, sw: corner.sw, ne: 0, se: 0 }
+        } else if i == bands - 1 {
+            CornerRadius { ne: corner.ne, se: corner.se, nw: 0, sw: 0 }
+        } else {
+            CornerRadius::ZERO
+        };
+        painter.rect_filled(band, rounding, colour);
+    }
+    if response.hovered() {
+        painter.rect_filled(rect, corner, Color32::from_white_alpha(14));
+    }
+    let tile = Rect::from_min_size(rect.left_top() + vec2(16.0, 16.0), vec2(56.0, 56.0));
+    painter.rect_filled(tile, CornerRadius::same(theme::corner(12)), Color32::from_white_alpha(40));
+    painter.text(tile.center(), egui::Align2::CENTER_CENTER, "♥", theme::bold(26.0), palette.on_accent);
+    painter.text(pos2(tile.right() + 16.0, rect.center().y - 11.0), egui::Align2::LEFT_CENTER, title, theme::bold(18.0), palette.on_accent);
+    painter.text(pos2(tile.right() + 16.0, rect.center().y + 13.0), egui::Align2::LEFT_CENTER, subtitle, theme::regular(13.0), palette.on_accent.gamma_multiply(0.85));
+    play_triangle(painter, pos2(rect.right() - 28.0, rect.center().y), 8.0, palette.on_accent);
+    response
+}
+
 pub fn card(ui: &mut Ui, palette: &Palette, artwork_url: Option<&str>, title: &str, subtitle: &str) -> egui::Response {
     card_badged(ui, palette, artwork_url, title, subtitle, None)
 }

@@ -149,6 +149,75 @@ pub fn load(backend: &YtDlp, artist: &ArtistRef) -> Result<Playlist, String> {
     })
 }
 
+/// What an artist's page shows besides their songs: their most played, then their albums and playlists row by row.
+#[derive(Clone, Debug, Default)]
+pub struct Extras {
+    pub popular: Vec<Track>,
+    pub rows: Vec<(String, Vec<Playlist>)>,
+}
+
+/// How many of an artist's most played songs head their page, as Popular.
+const POPULAR: usize = 5;
+
+/// An artist's most played songs and their albums and playlists, from their service: the SoundCloud profile's own
+/// lists, or YouTube Music's albums and playlists that are theirs. Empty where the service has none to say.
+pub fn extras(artist: &ArtistRef) -> Extras {
+    match (artist.provider, &artist.profile) {
+        (ProviderType::Soundcloud, Some(profile)) => match crate::soundcloud::collections(profile) {
+            Ok(found) => {
+                let mut rows = vec![];
+                if !found.albums.is_empty() {
+                    rows.push(("Albums".to_string(), found.albums));
+                }
+                if !found.playlists.is_empty() {
+                    rows.push(("Playlists".to_string(), found.playlists));
+                }
+                Extras { popular: found.popular.into_iter().take(POPULAR).collect(), rows }
+            }
+            Err(_) => Extras::default(),
+        },
+        (ProviderType::YoutubeMusic, _) => {
+            let theirs = |lists: Vec<Playlist>| -> Vec<Playlist> {
+                lists.into_iter().filter(|p| p.owner_name.as_deref().is_some_and(|o| names_match(o, &artist.name))).collect()
+            };
+            let mut rows = vec![];
+            let albums = theirs(crate::ytmusic::search_albums(&artist.name, 20).unwrap_or_default());
+            if !albums.is_empty() {
+                rows.push(("Albums".to_string(), albums));
+            }
+            let playlists = theirs(crate::ytmusic::search_playlists(&artist.name, 20).unwrap_or_default());
+            if !playlists.is_empty() {
+                rows.push((format!("Playlists by {}", artist.name), playlists));
+            }
+            Extras { popular: vec![], rows }
+        }
+        _ => Extras::default(),
+    }
+}
+
+/// Playlists for `query` from YouTube Music and SoundCloud, one from each in turn: what Playlists in Search finds.
+pub fn search_playlists(query: &str, limit: usize) -> Result<Vec<Playlist>, String> {
+    let (youtube, soundcloud) = std::thread::scope(|scope| {
+        let y = scope.spawn(|| crate::ytmusic::search_playlists(query, limit));
+        let s = scope.spawn(|| crate::soundcloud::search_playlists(query, limit));
+        (y.join().unwrap_or_else(|_| Ok(vec![])), s.join().unwrap_or_else(|_| Ok(vec![])))
+    });
+    if let (Err(why), Err(_)) = (&youtube, &soundcloud) {
+        return Err(why.clone());
+    }
+    let (mut y, mut s) = (youtube.unwrap_or_default().into_iter(), soundcloud.unwrap_or_default().into_iter());
+    let mut both = vec![];
+    loop {
+        let (one, other) = (y.next(), s.next());
+        if one.is_none() && other.is_none() {
+            break;
+        }
+        both.extend(one);
+        both.extend(other);
+    }
+    Ok(both)
+}
+
 /// 950, 12K, 1.2M: followers as a page says them.
 pub fn followers_line(count: i64) -> String {
     if count >= 1_000_000 {
