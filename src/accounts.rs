@@ -217,7 +217,10 @@ impl YouTube {
         let mut found: Vec<Track> = Vec::new();
         let mut body = self.post("browse", serde_json::json!({"browseId": format!("VL{playlist_id}")}))?;
         for _ in 0..20 {
-            let page = crate::ytmusic::parse_songs(&body);
+            // Only the playlist's own songs, and its own next page: see [`playlist_page`].
+            let (scope, own) = playlist_page(&body);
+            let Some(scope) = scope else { break };
+            let page = crate::ytmusic::parse_songs(scope);
             let before = found.len();
             for track in page {
                 if !found.iter().any(|t| t.id == track.id) {
@@ -227,7 +230,7 @@ impl YouTube {
             if found.len() >= limit || found.len() == before {
                 break;
             }
-            let Some(token) = continuation(&body) else { break };
+            let Some(token) = (if own { continuation(scope) } else { continuation(&body) }) else { break };
             body = self.post("browse", serde_json::json!({"continuation": token}))?;
         }
         found.truncate(limit);
@@ -474,6 +477,26 @@ fn runs_or_simple(node: &serde_json::Value) -> Option<String> {
     Some(text.trim().to_string()).filter(|t| !t.is_empty())
 }
 
+/// The part of a playlist's page that is the playlist, and whether it was found as such.
+///
+/// A playlist of the listener's own comes with a Suggestions shelf under its songs, with a Refresh token for more:
+/// read as one heap, the suggestions became songs of the playlist and the token brought more of them. So the songs,
+/// and the next page's token, are read from the playlist's own shelf (`musicPlaylistShelfRenderer`, or a later
+/// page's continuation of it). A page of suggestions alone (`musicShelfContinuation`) is None: none of it is the
+/// playlist. A page in neither shape is read whole, as before, with `false`.
+fn playlist_page(body: &serde_json::Value) -> (Option<&serde_json::Value>, bool) {
+    for name in ["musicPlaylistShelfRenderer", "musicPlaylistShelfContinuation", "appendContinuationItemsAction"] {
+        let mut found = Vec::new();
+        find_key(body, name, &mut found);
+        if let Some(shelf) = found.into_iter().find(|v| v.is_object()) {
+            return (Some(shelf), true);
+        }
+    }
+    let mut suggestions = Vec::new();
+    find_key(body, "musicShelfContinuation", &mut suggestions);
+    if suggestions.is_empty() { (Some(body), false) } else { (None, false) }
+}
+
 /// The pages of playlists read at most: a couple of dozen to a page, so a thousand and more.
 const MAX_PLAYLIST_PAGES: usize = 50;
 
@@ -581,6 +604,30 @@ impl SoundCloud {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_playlists_suggestions_are_not_its_songs() {
+        let row = |id: &str, title: &str| serde_json::json!({"musicResponsiveListItemRenderer": {
+            "playlistItemData": {"videoId": id},
+            "flexColumns": [
+                {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": title}]}}},
+                {"musicResponsiveListItemFlexColumnRenderer": {"text": {"runs": [{"text": "Puhf"}, {"text": " • "}, {"text": "3:49"}]}}}
+            ]}});
+        let body = serde_json::json!({"contents": {"sectionListRenderer": {
+            "contents": [
+                {"musicPlaylistShelfRenderer": {"contents": [row("voices", "The Voices Told Me To")]}},
+                {"musicShelfRenderer": {"contents": [row("idontlove", "idontloveyouanymore"), row("evermore", "evermore.")]}}
+            ],
+            "continuations": [{"nextContinuationData": {"continuation": "SUGGESTIONS-REFRESH"}}]
+        }}});
+        let (scope, own) = super::playlist_page(&body);
+        assert!(own);
+        let songs = crate::ytmusic::parse_songs(scope.unwrap());
+        assert_eq!(songs.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), vec!["voices"]);
+        assert_eq!(continuation(scope.unwrap()), None);
+        let suggestions = serde_json::json!({"continuationContents": {"musicShelfContinuation": {"contents": [row("x", "Suggested")]}}});
+        assert!(super::playlist_page(&suggestions).0.is_none());
+    }
+
     use super::*;
 
     /// One page of the library's playlist grid, and the token for the next if there is one.
