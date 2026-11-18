@@ -14,7 +14,9 @@
 //! Settings by its name in the code, `settingspage:Theme`. Each waits `NOCTORIUM_CAPTURE_WAIT` seconds (eight by default) for the
 //! services to answer and the covers to arrive.
 //!
-//! Radio has steps of its own that take no picture: `radio` and `music` choose the search's kind, `ctrlf`
+//! `artist:sc|<name>|<profile>` and `artist:ytm|<name>` open an artist's page.
+//!
+//! Radio has steps of its own that take no picture: `radio`, `music`, `artists` and `playlists` choose the search's kind, `ctrlf`
 //! switches it as Ctrl+F in the quick search bar does, `country:<CODE>` picks a country (`country:` for
 //! everywhere), `menu:<name>` holds the `kind`, `quickkind` or `country` menu open for the pictures after it
 //! (`menu:` lets it go), and `playstation` tunes in to the first station found.
@@ -173,6 +175,8 @@ fn open(step: &str, app: &App, actions: &mut Vec<Action>) {
     match step {
         "radio" => return actions.push(Action::SetSearchKind(super::SearchKind::Radio)),
         "music" => return actions.push(Action::SetSearchKind(super::SearchKind::Music)),
+        "artists" => return actions.push(Action::SetSearchKind(super::SearchKind::Artists)),
+        "playlists" => return actions.push(Action::SetSearchKind(super::SearchKind::Playlists)),
         "ctrlf" => return actions.push(Action::ToggleSearchKind),
         "playstation" => {
             if let Some(station) = app.radio.stations.first() {
@@ -182,6 +186,21 @@ fn open(step: &str, app: &App, actions: &mut Vec<Action>) {
             return;
         }
         _ => {}
+    }
+    // An artist's page: `artist:sc|ODESZA|https://soundcloud.com/odesza` or `artist:ytm|Daft Punk`.
+    if let Some(spec) = step.strip_prefix("artist:") {
+        let mut parts = spec.split('|');
+        let provider = match parts.next().unwrap_or("") {
+            "sc" => crate::domain::ProviderType::Soundcloud,
+            _ => crate::domain::ProviderType::YoutubeMusic,
+        };
+        let name = parts.next().unwrap_or("").trim().to_string();
+        let profile = parts.next().map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+        let key = crate::artists::key(&crate::artists::ArtistRef { provider, name: name.clone(), profile: profile.clone(), artwork: None });
+        if app.page != Page::Remote(key) {
+            actions.push(Action::OpenArtist(crate::artists::ArtistRef { provider, name, profile, artwork: None }));
+        }
+        return;
     }
     if let Some(code) = step.strip_prefix("country:") {
         let code = code.trim().to_uppercase();

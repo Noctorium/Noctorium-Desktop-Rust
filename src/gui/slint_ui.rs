@@ -339,6 +339,8 @@ impl Ui {
             }
         }
         app.search.id.hash(&mut h);
+        format!("{:?}", app.search_kind).hash(&mut h);
+        app.search.playlists.as_ref().map(|r| r.as_ref().map(|p| p.len()).map_err(|e| e.len())).hash(&mut h);
         for (provider, result) in &app.search.results {
             (format!("{provider:?}"), result.as_ref().map(|r| r.as_ref().map(|t| t.len()).map_err(|e| e.len()))).hash(&mut h);
         }
@@ -348,6 +350,8 @@ impl Ui {
                 Some(Loadable::Failed(e)) => e.hash(&mut h),
                 _ => 0.hash(&mut h),
             }
+            // An artist's albums and playlists, which come after their songs.
+            app.artist_extras.get(url).map(|e| (e.popular.len(), e.rows.len())).hash(&mut h);
         }
         if let Some(track) = app.queue.current() {
             match app.lyrics.get(&track.queue_key()) {
@@ -664,7 +668,7 @@ impl Ui {
                 None => ("PLAYLIST", "Playlist".into(), String::new(), None, vec![], false, "This playlist is not in your library any more.".into()),
             },
             Page::Remote(url) => match self.app.remote.get(url) {
-                Some(Loadable::Ready(p)) => ("PLAYLIST", p.title.clone(), format!("{} · {}", p.provider.display_name(), summary(&p.tracks)), p.artwork_url.clone().or_else(|| p.tracks.first().and_then(|t| t.artwork_url.clone())), p.tracks.clone(), false, String::new()),
+                Some(Loadable::Ready(p)) => (if crate::artists::is_key(url) { "ARTIST" } else { "PLAYLIST" }, p.title.clone(), format!("{} · {}", p.provider.display_name(), summary(&p.tracks)), p.artwork_url.clone().or_else(|| p.tracks.first().and_then(|t| t.artwork_url.clone())), p.tracks.clone(), false, String::new()),
                 Some(Loadable::Failed(why)) => ("PLAYLIST", "Playlist".into(), String::new(), None, vec![], false, why.clone()),
                 _ => ("PLAYLIST", "Playlist".into(), String::new(), None, vec![], true, String::new()),
             },
@@ -1215,6 +1219,15 @@ impl Capture {
                     ui.search(&words);
                 }
                 s if s.starts_with("theme:") => ui.bridge("theme", s.trim_start_matches("theme:"), &window),
+                kind @ ("music" | "radio" | "artists" | "playlists") => ui.bridge("search-kind", kind, &window),
+                // An artist's page, as egui's capture opens one: `artist:sc|<name>|<profile>` or `artist:ytm|<name>`.
+                s if s.starts_with("artist:") => {
+                    let mut parts = s.trim_start_matches("artist:").split('|');
+                    let provider = if parts.next() == Some("sc") { ProviderType::Soundcloud } else { ProviderType::YoutubeMusic };
+                    let name = parts.next().unwrap_or("").trim().to_string();
+                    let profile = parts.next().map(|p| p.trim().to_string()).filter(|p| !p.is_empty());
+                    ui.act(Action::OpenArtist(crate::artists::ArtistRef { provider, name, profile, artwork: None }));
+                }
                 _ => {}
             }
             self.picture = !silent;
