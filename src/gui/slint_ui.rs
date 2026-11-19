@@ -316,6 +316,8 @@ impl Ui {
         let mut h = std::collections::hash_map::DefaultHasher::new();
         format!("{:?}", app.page).hash(&mut h);
         app.settings.theme.hash(&mut h);
+        // The first-time setup: whether it is shown, its step, and what its steps choose.
+        (app.settings.setup_done, format!("{:?}", app.setup_step), app.settings.autoplay, format!("{:?}", app.settings.search_mode)).hash(&mut h);
         app.settings.profile_name.hash(&mut h);
         format!("{:?}", app.settings.looks.hidden_pages).hash(&mut h);
         app.queue.current_index.hash(&mut h);
@@ -378,6 +380,7 @@ impl Ui {
                 window.invoke_focus_search();
             }
         }
+        self.build_setup(window);
         self.build_rail(window);
         self.build_toasts(window);
         match &page {
@@ -532,6 +535,44 @@ impl Ui {
             }
         }
         window.set_home_shelves(model(shelves));
+    }
+
+    /// The first-time setup, while it is shown: see [`crate::setup`].
+    fn build_setup(&mut self, window: &AppWindow) {
+        use crate::setup::{Step, THEMES};
+        let step = self.app.setup_step;
+        let colour = |v: u32| slint::Color::from_rgb_u8((v >> 16) as u8, (v >> 8) as u8, v as u8);
+        let themes: Vec<SetupTheme> = THEMES
+            .iter()
+            .map(|key| {
+                let preset = crate::theme::preset(key);
+                SetupTheme {
+                    key: preset.key.into(),
+                    name: preset.name.into(),
+                    chosen: self.app.settings.theme == *key,
+                    background: colour(preset.colours.background),
+                    card: colour(preset.colours.card),
+                    accent: colour(preset.colours.accent),
+                }
+            })
+            .collect();
+        window.set_setup(SetupState {
+            shown: !self.app.settings.setup_done,
+            step: format!("{step:?}").to_lowercase().into(),
+            progress: step.progress().to_uppercase().into(),
+            title: step.title().into(),
+            about: step.about().into(),
+            index: step.index() as i32,
+            count: Step::ALL.len() as i32,
+            themes: model(themes),
+            search_mode: match self.app.settings.search_mode {
+                crate::bangs::SearchMode::Hybrid => "hybrid",
+                crate::bangs::SearchMode::Soundcloud => "soundcloud",
+                _ => "youtube-music",
+            }
+            .into(),
+            autoplay: self.app.settings.autoplay,
+        });
     }
 
     fn build_search(&mut self, window: &AppWindow) {
@@ -939,6 +980,27 @@ impl Ui {
                 self.app.fetch_lyrics();
                 return self.refresh(false);
             }
+            "setup" => {
+                let step = self.app.setup_step;
+                match argument {
+                    "skip" => Action::FinishSetup(None),
+                    "accounts" => Action::FinishSetup(Some(Page::Services)),
+                    "back" => match step.previous() {
+                        Some(back) => Action::SetupStep(back),
+                        None => return,
+                    },
+                    _ => match step.next() {
+                        Some(next) => Action::SetupStep(next),
+                        None => Action::FinishSetup(None),
+                    },
+                }
+            }
+            "setup-search" => Action::SetSearchMode(match argument {
+                "hybrid" => crate::bangs::SearchMode::Hybrid,
+                "soundcloud" => crate::bangs::SearchMode::Soundcloud,
+                _ => crate::bangs::SearchMode::YoutubeMusic,
+            }),
+            "setup-autoplay" => Action::SetAutoplay(argument == "on"),
             "theme" => match crate::theme::PRESETS.iter().find(|p| p.key == argument) {
                 Some(preset) => Action::SetTheme(preset.key),
                 None => return,
@@ -1220,6 +1282,11 @@ impl Capture {
                 }
                 s if s.starts_with("theme:") => ui.bridge("theme", s.trim_start_matches("theme:"), &window),
                 kind @ ("music" | "radio" | "artists" | "playlists") => ui.bridge("search-kind", kind, &window),
+                s if s.starts_with("setup:") => {
+                    if let Some(action) = super::capture::setup_capture_action(s) {
+                        ui.act(action);
+                    }
+                }
                 // An artist's page, as egui's capture opens one: `artist:sc|<name>|<profile>` or `artist:ytm|<name>`.
                 s if s.starts_with("artist:") => {
                     let mut parts = s.trim_start_matches("artist:").split('|');

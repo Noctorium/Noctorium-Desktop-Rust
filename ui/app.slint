@@ -3,10 +3,34 @@
 // (src/gui/slint_ui.rs) and hears back through Bridge.
 
 import { Theme, Bridge, Icons, Palette } from "theme.slint";
-import { TrackItem, Shelf, Icon, IconButton, PlayButton, Cover, NavButton, Bar, TrackMenu } from "widgets.slint";
+import { TrackItem, Shelf, Icon, IconButton, PlayButton, Cover, NavButton, Bar, TrackMenu, PrimaryButton, SecondaryButton } from "widgets.slint";
 import { HomePage, SearchPage, LibraryPage, SongsPageView, QueuePage, NowPlayingPage, SettingsPage, NotYetPage, LibraryItem, SongsPage, LyricLine, NowPlaying, ThemeItem } from "pages.slint";
 
 export { Theme, Bridge, Icons, Palette, TrackItem, Shelf, LibraryItem, SongsPage, LyricLine, NowPlaying, ThemeItem }
+
+/// A theme the first-time setup offers, with the three colours its swatch is drawn in.
+export struct SetupTheme {
+    key: string,
+    name: string,
+    chosen: bool,
+    background: color,
+    card: color,
+    accent: color,
+}
+
+/// The first-time setup as it stands: which step, and what each step chooses between.
+export struct SetupState {
+    shown: bool,
+    step: string,
+    progress: string,
+    title: string,
+    about: string,
+    index: int,
+    count: int,
+    themes: [SetupTheme],
+    search-mode: string,
+    autoplay: bool,
+}
 
 export struct NavEntry {
     icon: string,
@@ -381,6 +405,7 @@ export component AppWindow inherits Window {
 
     in property <image> mark;
     in property <string> page: "home";
+    in property <SetupState> setup;
     /// What the rail lights up: the page, or the playlist open.
     in property <string> rail-page: "home";
     in property <[NavEntry]> nav;
@@ -599,6 +624,122 @@ export component AppWindow inherits Window {
                 font-size: 13.5px;
                 wrap: word-wrap;
                 vertical-alignment: center;
+            }
+        }
+    }
+
+    // A first start: the setup, over everything, until it is finished or skipped. See src/setup.rs.
+    if root.setup.shown: Rectangle {
+        background: Theme.p.page;
+        TouchArea { }
+        VerticalLayout {
+            alignment: center;
+            padding-left: max(24px, (root.width - 640px) / 2);
+            padding-right: max(24px, (root.width - 640px) / 2);
+            spacing: 14px;
+            HorizontalLayout {
+                spacing: 6px;
+                for i in root.setup.count: Rectangle {
+                    width: i == root.setup.index ? 22px : 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: i <= root.setup.index ? Theme.p.accent : Theme.p.line;
+                }
+                Rectangle { horizontal-stretch: 1; }
+                if root.setup.step != "done": SecondaryButton {
+                    text: "Skip setup";
+                    clicked => { Bridge.act("setup", "skip"); }
+                }
+            }
+            Text {
+                text: root.setup.progress;
+                color: Theme.p.accent;
+                font-size: 12px;
+                font-weight: 700;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: root.setup.title;
+                color: Theme.p.text;
+                font-size: 32px;
+                font-weight: 700;
+                horizontal-alignment: center;
+            }
+            Text {
+                text: root.setup.about;
+                color: Theme.p.subtext;
+                font-size: 15px;
+                wrap: word-wrap;
+                horizontal-alignment: center;
+            }
+            if root.setup.step == "look": HorizontalLayout {
+                alignment: center;
+                spacing: 10px;
+                for theme in root.setup.themes: Rectangle {
+                    width: 68px;
+                    height: 74px;
+                    border-radius: 10px;
+                    border-width: theme.chosen ? 2px : 1px;
+                    border-color: theme.chosen ? Theme.p.accent : Theme.p.line;
+                    TouchArea { clicked => { Bridge.act("theme", theme.key); } }
+                    VerticalLayout {
+                        padding: 6px;
+                        spacing: 4px;
+                        HorizontalLayout {
+                            height: 32px;
+                            Rectangle { background: theme.background; }
+                            Rectangle { background: theme.card; }
+                            Rectangle { background: theme.accent; }
+                        }
+                        Text {
+                            text: theme.name;
+                            color: Theme.p.text;
+                            font-size: 11px;
+                            font-weight: theme.chosen ? 700 : 400;
+                            overflow: elide;
+                        }
+                    }
+                }
+            }
+            if root.setup.step == "search": HorizontalLayout {
+                alignment: center;
+                spacing: 8px;
+                for option in [
+                    { key: "hybrid", text: "Every service at once" },
+                    { key: "youtube-music", text: "YouTube Music" },
+                    { key: "soundcloud", text: "SoundCloud" },
+                ]: SecondaryButton {
+                    text: option.text;
+                    active: root.setup.search-mode == option.key;
+                    clicked => { Bridge.act("setup-search", option.key); }
+                }
+            }
+            if root.setup.step == "listening": HorizontalLayout {
+                alignment: center;
+                SecondaryButton {
+                    text: root.setup.autoplay ? "Autoplay is on — songs like the last one when the queue runs out" : "Autoplay is off — the music stops when the queue ends";
+                    active: root.setup.autoplay;
+                    clicked => { Bridge.act("setup-autoplay", root.setup.autoplay ? "off" : "on"); }
+                }
+            }
+            if root.setup.step == "accounts": HorizontalLayout {
+                alignment: center;
+                SecondaryButton {
+                    text: "Sign in now — YouTube Music, SoundCloud, Spotify and more";
+                    clicked => { Bridge.act("setup", "accounts"); }
+                }
+            }
+            HorizontalLayout {
+                padding-top: 16px;
+                if root.setup.index > 0: SecondaryButton {
+                    text: "Back";
+                    clicked => { Bridge.act("setup", "back"); }
+                }
+                Rectangle { horizontal-stretch: 1; }
+                PrimaryButton {
+                    text: root.setup.step == "welcome" ? "Get started" : (root.setup.step == "done" ? "Start listening" : "Next");
+                    clicked => { Bridge.act("setup", "next"); }
+                }
             }
         }
     }

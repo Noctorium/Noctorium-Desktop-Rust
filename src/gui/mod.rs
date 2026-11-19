@@ -179,6 +179,9 @@ pub enum Action {
     PlaySuggestion(usize),
     KeepSuggestion(usize),
     SetTheme(&'static str),
+    /// The first-time setup: to a step of it, or done with it (finished or skipped), and then perhaps to a page.
+    SetupStep(crate::setup::Step),
+    FinishSetup(Option<Page>),
     SetAutoplay(bool),
     SetRestoreQueue(bool),
     SetSpeed(f32),
@@ -612,6 +615,8 @@ pub struct ToolInfo {
 }
 
 pub struct App {
+    /// Where the first-time setup is, while it is shown: see [`crate::setup`].
+    pub setup_step: crate::setup::Step,
     host: host::Host,
     places: Places,
     pub settings: Settings,
@@ -901,6 +906,7 @@ impl App {
             history: Vec::new(),
             inputs: Inputs::default(),
             search: SearchState::default(),
+            setup_step: crate::setup::Step::Welcome,
             search_kind: SearchKind::Music,
             radio_browser: crate::radio::RadioBrowser::default(),
             radio_country: None,
@@ -3247,6 +3253,14 @@ impl App {
                 self.queue.keep_suggestion(index);
                 self.queue_changed();
             }
+            Action::SetupStep(step) => self.setup_step = step,
+            Action::FinishSetup(then) => {
+                self.settings.setup_done = true;
+                self.save_settings();
+                if let Some(page) = then {
+                    self.open(page);
+                }
+            }
             Action::SetTheme(key) => {
                 self.settings.theme = key.to_string();
                 self.save_settings();
@@ -4623,12 +4637,17 @@ impl eframe::App for App {
             }
         }
         pages::skin_title_bar(self, ctx);
-        player::player_bar(self, ctx, &mut inputs, &mut actions);
-        pages::rail(self, ctx, &mut actions);
-        if self.settings.lyrics_open {
-            player::lyrics_panel(self, ctx, &mut actions);
+        // A first start: the setup, in place of the player and the pages, until it is finished or skipped.
+        if !self.settings.setup_done {
+            pages::first_time_setup(self, ctx, &mut actions);
+        } else {
+            player::player_bar(self, ctx, &mut inputs, &mut actions);
+            pages::rail(self, ctx, &mut actions);
+            if self.settings.lyrics_open {
+                player::lyrics_panel(self, ctx, &mut actions);
+            }
+            pages::central(self, ctx, &mut inputs, &mut actions);
         }
-        pages::central(self, ctx, &mut inputs, &mut actions);
         widgets::toasts(self, ctx);
         let mut quick = self.quick.take();
         pages::quick_search(self, ctx, quick.as_mut(), &mut actions);

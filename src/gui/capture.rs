@@ -188,6 +188,9 @@ fn open(step: &str, app: &App, actions: &mut Vec<Action>) {
         _ => {}
     }
     // An artist's page: `artist:sc|ODESZA|https://soundcloud.com/odesza` or `artist:ytm|Daft Punk`.
+    if let Some(action) = setup_capture_action(step) {
+        return actions.push(action);
+    }
     if let Some(spec) = step.strip_prefix("artist:") {
         let mut parts = spec.split('|');
         let provider = match parts.next().unwrap_or("") {
@@ -292,4 +295,13 @@ fn sanitise(step: &str) -> String {
     step.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_lowercase() } else { '-' })
         .collect()
+}
+
+/// A capture step for the first-time setup: `setup:<step>` shows a step of it, `setup:skip` skips it.
+pub fn setup_capture_action(step: &str) -> Option<Action> {
+    let name = step.strip_prefix("setup:")?;
+    if name == "skip" {
+        return Some(Action::FinishSetup(None));
+    }
+    crate::setup::Step::ALL.into_iter().find(|s| format!("{s:?}").eq_ignore_ascii_case(name)).map(Action::SetupStep)
 }

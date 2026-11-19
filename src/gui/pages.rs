@@ -86,6 +86,129 @@ pub fn rail(app: &App, ctx: &egui::Context, actions: &mut Vec<Action>) {
         });
 }
 
+/// The first-time setup, over the whole window: the steps of [`crate::setup`], each with Back, Next and "Skip setup".
+pub fn first_time_setup(app: &App, ctx: &egui::Context, actions: &mut Vec<Action>) {
+    use crate::setup::{Step, SEARCH_MODES, THEMES};
+    let palette = app.palette;
+    let step = app.setup_step;
+    egui::CentralPanel::default().frame(egui::Frame::new().fill(palette.page).inner_margin(egui::Margin::same(24))).show(ctx, |ui| {
+        let width = ui.available_width().min(640.0);
+        let side = ((ui.available_width() - width) / 2.0).max(0.0);
+        ui.add_space((ui.available_height() * 0.12).min(90.0));
+        ui.horizontal(|ui| {
+            ui.add_space(side);
+            ui.vertical(|ui| {
+                ui.set_width(width);
+                // Where it is in the steps, as dots, and the way out of all of them.
+                ui.horizontal(|ui| {
+                    for s in Step::ALL {
+                        let size = if s == step { vec2(22.0, 8.0) } else { vec2(8.0, 8.0) };
+                        let (rect, _) = ui.allocate_exact_size(size, egui::Sense::hover());
+                        let colour = if s.index() <= step.index() { palette.accent } else { palette.faint.gamma_multiply(0.5) };
+                        ui.painter().rect_filled(rect, egui::CornerRadius::same(4), colour);
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if step != Step::Done && ui.add(egui::Button::new(RichText::new("Skip setup").color(palette.accent)).frame(false)).clicked() {
+                            actions.push(Action::FinishSetup(None));
+                        }
+                    });
+                });
+                ui.add_space(30.0);
+                ui.vertical_centered(|ui| {
+                    ui.label(RichText::new(step.progress().to_uppercase()).font(theme::bold(12.0)).color(palette.accent));
+                    ui.add_space(6.0);
+                    ui.label(RichText::new(step.title()).font(theme::bold(32.0)).color(palette.text));
+                    ui.add_space(8.0);
+                    ui.label(RichText::new(step.about()).font(theme::regular(15.0)).color(palette.subtext));
+                });
+                ui.add_space(24.0);
+                match step {
+                    Step::Welcome | Step::Done => {}
+                    Step::Look => {
+                        ui.horizontal_wrapped(|ui| {
+                            ui.spacing_mut().item_spacing = vec2(12.0, 12.0);
+                            for key in THEMES {
+                                let preset = crate::theme::preset(key);
+                                let chosen = app.settings.theme == key;
+                                let (rect, response) = ui.allocate_exact_size(vec2(140.0, 86.0), egui::Sense::click());
+                                let painter = ui.painter();
+                                painter.rect_stroke(
+                                    rect,
+                                    egui::CornerRadius::same(12),
+                                    Stroke::new(if chosen { 2.0_f32 } else { 1.0_f32 }, if chosen { palette.accent } else { palette.faint.gamma_multiply(0.4) }),
+                                    egui::StrokeKind::Inside,
+                                );
+                                let swatch = egui::Rect::from_min_size(rect.min + vec2(10.0, 10.0), vec2(rect.width() - 20.0, 40.0));
+                                let third = swatch.width() / 3.0;
+                                for (n, colour) in [preset.colours.background, preset.colours.card, preset.colours.accent].iter().enumerate() {
+                                    let part = egui::Rect::from_min_size(swatch.min + vec2(third * n as f32, 0.0), vec2(third + 0.5, swatch.height()));
+                                    painter.rect_filled(part, egui::CornerRadius::ZERO, crate::theme::rgb(*colour));
+                                }
+                                painter.text(
+                                    egui::pos2(rect.left() + 10.0, rect.bottom() - 18.0),
+                                    egui::Align2::LEFT_CENTER,
+                                    preset.name,
+                                    if chosen { theme::bold(13.0) } else { theme::regular(13.0) },
+                                    palette.text,
+                                );
+                                if response.clicked() {
+                                    actions.push(Action::SetTheme(preset.key));
+                                }
+                            }
+                        });
+                    }
+                    Step::Search => {
+                        ui.horizontal_wrapped(|ui| {
+                            for mode in SEARCH_MODES {
+                                let label = if mode == crate::bangs::SearchMode::Hybrid { "Every service at once" } else { mode.display_name() };
+                                if ui.selectable_label(app.settings.search_mode == mode, RichText::new(label).font(theme::regular(15.0))).clicked() {
+                                    actions.push(Action::SetSearchMode(mode));
+                                }
+                            }
+                        });
+                    }
+                    Step::Listening => {
+                        let mut on = app.settings.autoplay;
+                        if ui.checkbox(&mut on, RichText::new("Autoplay: songs like the last one, when the queue runs out").font(theme::regular(15.0))).changed() {
+                            actions.push(Action::SetAutoplay(on));
+                        }
+                    }
+                    Step::Accounts => {
+                        ui.vertical_centered(|ui| {
+                            if secondary(ui, &palette, "Sign in now \u{2014} YouTube Music, SoundCloud, Spotify and more").clicked() {
+                                actions.push(Action::FinishSetup(Some(Page::Services)));
+                            }
+                            ui.add_space(4.0);
+                            ui.label(RichText::new("Opens Services; the setup is done either way.").color(palette.faint));
+                        });
+                    }
+                }
+                ui.add_space(30.0);
+                ui.horizontal(|ui| {
+                    if let Some(back) = step.previous() {
+                        if secondary(ui, &palette, "Back").clicked() {
+                            actions.push(Action::SetupStep(back));
+                        }
+                    }
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        let text = match step {
+                            Step::Welcome => "Get started",
+                            Step::Done => "Start listening",
+                            _ => "Next",
+                        };
+                        if primary(ui, &palette, text).clicked() {
+                            actions.push(match step.next() {
+                                Some(next) => Action::SetupStep(next),
+                                None => Action::FinishSetup(None),
+                            });
+                        }
+                    });
+                });
+            });
+        });
+    });
+}
+
 pub fn central(app: &App, ctx: &egui::Context, inputs: &mut Inputs, actions: &mut Vec<Action>) {
     egui::CentralPanel::default()
         .frame(egui::Frame::new().inner_margin(egui::Margin { left: 28, right: 24, top: 20, bottom: 8 }))

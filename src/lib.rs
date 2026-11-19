@@ -33,6 +33,7 @@ pub mod radio;
 pub mod sponsorblock;
 pub mod scrobble;
 pub mod services;
+pub mod setup;
 pub mod sharelink;
 pub mod secrets;
 pub mod shortcuts;

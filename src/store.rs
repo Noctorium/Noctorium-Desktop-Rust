@@ -61,6 +61,10 @@ impl Places {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default, rename_all = "camelCase")]
 pub struct Settings {
+    /// Whether the first-time setup has been finished or skipped: see [`crate::setup`]. True unless said otherwise,
+    /// so settings from before there was a setup read as done and an update never shows it; only a first start, with
+    /// no settings file at all, begins with it false ([`load_settings`]), and being saved so it stays until finished.
+    pub setup_done: bool,
     /// A [`crate::theme::ThemePreset`] by the name Kotlin saves it under, `NOCTORIUM_NIGHT`.
     pub theme: String,
     pub volume: f32,
@@ -215,6 +219,7 @@ pub fn default_hybrid_search() -> Vec<ProviderType> {
 impl Default for Settings {
     fn default() -> Self {
         Settings {
+            setup_done: true,
             theme: "NOCTORIUM_NIGHT".into(),
             volume: 0.72,
             muted: false,
@@ -328,7 +333,12 @@ impl Library {
 }
 
 pub fn load_settings(places: &Places) -> Settings {
-    read_json(places.file("settings.json")).unwrap_or_default()
+    let path = places.file("settings.json");
+    // No settings file at all is a first start: the one time the setup is offered.
+    if path.as_ref().is_some_and(|p| !p.exists()) {
+        return Settings { setup_done: false, ..Settings::default() };
+    }
+    read_json(path).unwrap_or_default()
 }
 
 pub fn save_settings(places: &Places, settings: &Settings) {
