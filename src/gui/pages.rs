@@ -1290,10 +1290,10 @@ pub fn quick_search(app: &App, ctx: &egui::Context, quick: Option<&mut super::Qu
                     };
                     if enter {
                         let typed = quick.text.trim();
-                        // A music link opens and plays, through Search's own link handling, rather than a result for its words.
-                        if !radio && (typed.starts_with("https://") || typed.starts_with("http://")) && crate::services::recognises(typed) {
-                            actions.push(Action::QuickSearchAll(quick.text.clone()));
-                        } else if matches!(app.search_kind, super::SearchKind::Artists | super::SearchKind::Playlists) {
+                        // A music link opens and plays through Search's own link handling, rather than a result for its
+                        // words; artists and playlists are pages, not songs, so Enter lists them on Search.
+                        let link = !radio && (typed.starts_with("https://") || typed.starts_with("http://")) && crate::services::recognises(typed);
+                        if link || matches!(app.search_kind, super::SearchKind::Artists | super::SearchKind::Playlists) {
                             actions.push(Action::QuickSearchAll(quick.text.clone()));
                         } else if quick.selected < results.len() {
                             play(quick.selected, actions);
