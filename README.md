@@ -14,11 +14,11 @@ It is released as **Noctorium Rust**, in every [Noctorium release](https://githu
 from 0.21.0 on, and the Noctorium installers offer it beside the rest:
 
 ```powershell
-& ([scriptblock]::Create((irm https://noctorium.vercel.app/install))) --product rust --yes
+& ([scriptblock]::Create((irm https://noctorium.xyz/install))) --product rust --yes
 ```
 
 ```bash
-curl -fsSL https://noctorium.vercel.app/install | sh -s -- --product rust --yes
+curl -fsSL https://noctorium.xyz/install | sh -s -- --product rust --yes
 ```
 
 Or by hand: `noctorium-rust-<version>-windows-x64.zip` holds `Noctorium Rust.exe`; the Linux archive the
