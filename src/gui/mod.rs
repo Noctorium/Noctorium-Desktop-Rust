@@ -221,6 +221,9 @@ pub enum Action {
     AccountLogIn { email: String, password: String },
     AccountSignUp { email: String, password: String, name: String },
     AccountSignOut,
+    /// Sign in from a browser, with Discord, Telegram, GitHub or email; and giving that up.
+    AccountBrowserSignIn,
+    AccountBrowserSignInCancel,
     SetDeezerProfile(Option<String>),
     SpotifySignIn,
     SetShortcut { id: &'static str, global: bool, chord: Option<String> },
@@ -440,6 +443,7 @@ pub enum Event {
     /// A YouTube playlist changed: the library is read again, and the playlist itself if it was open.
     YouTubeChanged { message: Result<String, String>, url: Option<String>, gone: bool },
     AccountSignedIn { result: Result<(crate::account::User, String), String>, quietly: bool },
+    AccountBrowserCode(Result<crate::account::DeviceStart, String>),
     AccountStats(Result<crate::account::Stats, String>),
     DeezerChart(Result<Chart, String>),
     DeezerProfile(Result<crate::deezer::Profile, String>),
@@ -772,6 +776,8 @@ pub struct App {
     pub account: Option<(crate::account::User, String)>,
     pub account_stats: Option<crate::account::Stats>,
     pub account_busy: bool,
+    /// A browser sign-in waiting to be allowed, and the switch that stops its wait.
+    pub account_browser: Option<(crate::account::DeviceStart, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
     unreported_plays: Vec<crate::account::PlayReport>,
 }
 
@@ -1007,6 +1013,7 @@ impl App {
             account: None,
             account_stats: None,
             account_busy: false,
+            account_browser: None,
             unreported_plays: Vec::new(),
             settings,
         };
@@ -2586,8 +2593,29 @@ impl App {
                 }
                 ServicePiece::YouTubeHome(_) => {}
             },
+            Event::AccountBrowserCode(result) => {
+                self.account_busy = false;
+                match result {
+                    Ok(start) => {
+                        open_externally(&start.url);
+                        let cancelled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                        let (waiting, stop) = (start.clone(), cancelled.clone());
+                        self.account_browser = Some((start, cancelled));
+                        self.spawn(move || match crate::account::wait_for_device_sign_in(&waiting, &stop) {
+                            Ok(Some(signed_in)) => Event::AccountSignedIn { result: Ok(signed_in), quietly: false },
+                            // Cancelled: said quietly, and ignored below if a newer wait has begun.
+                            Ok(None) => Event::AccountSignedIn { result: Err(String::new()), quietly: true },
+                            Err(why) => Event::AccountSignedIn { result: Err(why), quietly: false },
+                        });
+                    }
+                    Err(why) => self.toast(why, true),
+                }
+            }
             Event::AccountSignedIn { result, quietly } => {
                 self.account_busy = false;
+                if !(quietly && result.as_ref().is_err_and(String::is_empty)) {
+                    self.account_browser = None;
+                }
                 match result {
                     Ok((user, token)) => {
                         // Connect's key comes with the account: every device of the listener's has the same.
@@ -3754,6 +3782,15 @@ impl App {
             Action::AccountLogIn { email, password } => {
                 self.account_busy = true;
                 self.spawn(move || Event::AccountSignedIn { result: crate::account::log_in(&email, &password), quietly: false });
+            }
+            Action::AccountBrowserSignIn => {
+                self.account_busy = true;
+                self.spawn(|| Event::AccountBrowserCode(crate::account::start_device_sign_in()));
+            }
+            Action::AccountBrowserSignInCancel => {
+                if let Some((_, stop)) = self.account_browser.take() {
+                    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+                }
             }
             Action::AccountSignUp { email, password, name } => {
                 self.account_busy = true;

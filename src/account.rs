@@ -138,6 +138,93 @@ pub fn submit(plays: &[PlayReport], token: &str) -> bool {
     matches!(send("POST", "/api/plays", Some(token), Some(serde_json::json!({"plays": plays}))), Ok((200..=299, _)))
 }
 
+/// Signing in from a browser -- with Discord, GitHub, Telegram or email: the code to show, the page to open, and the
+/// secret this app alone keeps to collect its token with once the listener has allowed it there.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DeviceStart {
+    pub code: String,
+    pub poll_token: String,
+    pub url: String,
+    pub expires_in: u64,
+    pub interval: u64,
+}
+
+pub fn start_device_sign_in() -> Result<DeviceStart, String> {
+    let (status, body) = send("POST", "/api/auth/device", None, Some(serde_json::json!({})))?;
+    if !(200..300).contains(&status) {
+        return Err(body["error"].as_str().map(String::from).unwrap_or_else(|| format!("The service refused that (HTTP {status}).")));
+    }
+    let text = |key: &str| body[key].as_str().filter(|v| !v.is_empty()).map(String::from).ok_or("The service replied with something unexpected.");
+    Ok(DeviceStart {
+        code: text("code")?,
+        poll_token: text("pollToken")?,
+        url: text("url")?,
+        expires_in: body["expiresIn"].as_u64().unwrap_or(600),
+        interval: body["interval"].as_u64().unwrap_or(3).clamp(1, 30),
+    })
+}
+
+#[derive(Debug, PartialEq)]
+pub enum DevicePoll {
+    Waiting,
+    SignedIn(User, String),
+    /// Expired, already used or refused: the wait is over.
+    Over(String),
+    /// Not reached this time; worth asking again.
+    Unreachable,
+}
+
+fn device_poll_from(status: u16, body: &serde_json::Value) -> DevicePoll {
+    match status {
+        202 => DevicePoll::Waiting,
+        200..=299 => match (body["token"].as_str().filter(|t| !t.is_empty()), user_from(&body["user"])) {
+            (Some(token), Some(user)) => DevicePoll::SignedIn(user, token.to_string()),
+            _ => DevicePoll::Over("The service replied with something unexpected.".into()),
+        },
+        500..=599 => DevicePoll::Unreachable,
+        _ => DevicePoll::Over(body["error"].as_str().unwrap_or("That sign-in did not go through. Start again.").to_string()),
+    }
+}
+
+/// Waits, asking every few seconds, until the listener allows [start] in the browser, it lapses, or [cancelled] is set
+/// (then `Ok(None)`). Blocking: run it off the interface's thread.
+pub fn wait_for_device_sign_in(start: &DeviceStart, cancelled: &std::sync::atomic::AtomicBool) -> Result<Option<(User, String)>, String> {
+    let until = std::time::Instant::now() + Duration::from_secs(start.expires_in);
+    let path = format!("/api/auth/device/poll?token={}", url::form_urlencoded::byte_serialize(start.poll_token.as_bytes()).collect::<String>());
+    while std::time::Instant::now() < until {
+        std::thread::sleep(Duration::from_secs(start.interval));
+        if cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+            return Ok(None);
+        }
+        let poll = match send("GET", &path, None, None) {
+            Ok((status, body)) => device_poll_from(status, &body),
+            Err(_) => DevicePoll::Unreachable,
+        };
+        match poll {
+            DevicePoll::SignedIn(user, token) => return Ok(Some((user, token))),
+            DevicePoll::Over(why) => return Err(why),
+            DevicePoll::Waiting | DevicePoll::Unreachable => {}
+        }
+    }
+    Err("The code expired. Start again for a new one.".into())
+}
+
+#[cfg(test)]
+mod device_tests {
+    use super::*;
+
+    #[test]
+    fn device_polls_read_as_the_service_means_them() {
+        assert_eq!(device_poll_from(202, &serde_json::json!({"pending": true})), DevicePoll::Waiting);
+        // An account made with Discord may have no email: it comes back empty, and still signs in.
+        let ok = serde_json::json!({"token": "tok", "user": {"id": 9, "email": "", "displayName": "Disco"}});
+        assert_eq!(device_poll_from(200, &ok), DevicePoll::SignedIn(User { id: 9, email: String::new(), display_name: "Disco".into() }, "tok".into()));
+        assert_eq!(device_poll_from(410, &serde_json::json!({"error": "Expired."})), DevicePoll::Over("Expired.".into()));
+        assert_eq!(device_poll_from(503, &serde_json::Value::Null), DevicePoll::Unreachable);
+        assert!(matches!(device_poll_from(200, &serde_json::json!({})), DevicePoll::Over(_)));
+    }
+}
+
 /// What is playing now, for the Discord status and Telegram bio the account service shows: the song, or null when
 /// the music stops. Fire and forget; the next one corrects a missed one.
 pub fn now_playing(token: &str, track: Option<serde_json::Value>) {

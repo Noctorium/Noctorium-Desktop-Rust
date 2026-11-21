@@ -1517,6 +1517,30 @@ pub(super) fn account_settings(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs
                 });
                 ui.end_row();
             });
+            ui.add_space(10.0);
+            match &app.account_browser {
+                None => {
+                    if !app.account_busy && secondary(ui, &palette, "Sign in with Discord, Telegram or GitHub").clicked() {
+                        actions.push(Action::AccountBrowserSignIn);
+                    }
+                }
+                Some((start, _)) => {
+                    ui.label(RichText::new("Allow Noctorium in your browser. Check it shows this code:").color(palette.subtext));
+                    ui.label(RichText::new(&start.code).font(theme::bold(26.0)).color(palette.accent));
+                    ui.label(
+                        RichText::new(format!("Waiting for you to allow it… or open {} on another device.", start.url.split('?').next().unwrap_or(&start.url)))
+                            .color(palette.subtext),
+                    );
+                    ui.horizontal(|ui| {
+                        if secondary(ui, &palette, "Open in browser").clicked() {
+                            actions.push(Action::OpenUrl(start.url.clone()));
+                        }
+                        if secondary(ui, &palette, "Cancel").clicked() {
+                            actions.push(Action::AccountBrowserSignInCancel);
+                        }
+                    });
+                }
+            }
         });
 }
 
