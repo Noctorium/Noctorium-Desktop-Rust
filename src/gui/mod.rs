@@ -355,7 +355,7 @@ impl Diagnose {
                 ("YouTube Music", "https://music.youtube.com/"),
                 ("SoundCloud", "https://soundcloud.com/"),
                 ("LRCLIB lyrics", "https://lrclib.net/api/search?q=hello"),
-                ("Noctorium service", "https://noctorium-service.vercel.app/"),
+                ("Noctorium service", "https://service.noctorium.xyz/"),
                 ("GitHub (updates, tools)", "https://api.github.com/"),
             ]
             .map(|(name, url)| {
