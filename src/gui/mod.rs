@@ -749,6 +749,10 @@ pub struct App {
     pub presence: crate::discord::Presence,
     /// What the Discord card was last made from: the song, whether it played, and when it was sent.
     presence_sent: Option<(Option<String>, bool, i64, Instant)>,
+    /// The song the account was last told about (None: nothing playing), and when; see update_account_presence.
+    now_playing_sent: Option<(Option<String>, Instant)>,
+    /// What is playing now and since when, so a song is only reported once the music has settled on it.
+    now_playing_seen: (Option<String>, Instant),
     pub newer: Option<crate::update::Newer>,
     pub quick: Option<QuickSearch>,
     pub scrobblers: std::collections::BTreeMap<crate::scrobble::Site, crate::scrobble::Account>,
@@ -985,6 +989,8 @@ impl App {
             jobs: HashMap::new(),
             presence: crate::discord::Presence::start(),
             presence_sent: None,
+            now_playing_sent: None,
+            now_playing_seen: (None, Instant::now()),
             newer: None,
             quick: None,
             scrobblers: std::collections::BTreeMap::new(),
@@ -1619,6 +1625,37 @@ impl App {
         });
         self.presence.show(card, self.settings.discord.application());
         self.presence_sent = Some((key, playing, expected_start, Instant::now()));
+    }
+
+    /// Tells the Noctorium account what is playing, for the Discord status and Telegram bio its servers show with no
+    /// desktop needed: three seconds after the music settles on a song or stops -- so skipping sends only the last --
+    /// and again every five minutes while it plays, which keeps Discord's 20-minute session alive. Only when signed in.
+    fn update_account_presence(&mut self) {
+        let Some((_, token)) = self.account.clone() else { return };
+        let state = self.engine.state();
+        let playing = matches!(state.status, Status::Playing | Status::Loading);
+        let key = self.loaded.as_ref().filter(|_| playing).map(Track::queue_key);
+        if self.now_playing_seen.0 != key {
+            self.now_playing_seen = (key, Instant::now());
+            return;
+        }
+        if self.now_playing_seen.1.elapsed() < Duration::from_secs(3) {
+            return;
+        }
+        let due = match &self.now_playing_sent {
+            // Nothing playing since launch: nothing to clear.
+            None => key.is_some(),
+            Some((sent, at)) => *sent != key || (key.is_some() && at.elapsed() >= Duration::from_secs(5 * 60)),
+        };
+        if !due {
+            return;
+        }
+        self.now_playing_sent = Some((key.clone(), Instant::now()));
+        let track = key.and(self.loaded.as_ref()).map(|t| {
+            let duration = if state.duration_ms > 0 { state.duration_ms } else { t.duration_ms.unwrap_or(0) };
+            crate::account::now_playing_track(t, state.position_ms, duration)
+        });
+        std::thread::spawn(move || crate::account::now_playing(&token, track));
     }
 
     /// The quick search bar searches once typing has paused for a moment.
@@ -4507,6 +4544,7 @@ impl App {
         }
         self.watch();
         self.update_presence();
+        self.update_account_presence();
         self.keep_tray_in_step();
         self.feed_widgets();
         self.feed_connect();

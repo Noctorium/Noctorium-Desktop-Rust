@@ -138,6 +138,36 @@ pub fn submit(plays: &[PlayReport], token: &str) -> bool {
     matches!(send("POST", "/api/plays", Some(token), Some(serde_json::json!({"plays": plays}))), Ok((200..=299, _)))
 }
 
+/// What is playing now, for the Discord status and Telegram bio the account service shows: the song, or null when
+/// the music stops. Fire and forget; the next one corrects a missed one.
+pub fn now_playing(token: &str, track: Option<serde_json::Value>) {
+    let _ = send("POST", "/api/now-playing", Some(token), Some(serde_json::json!({ "track": track })));
+}
+
+/// A track as the service's now-playing reads it.
+pub fn now_playing_track(track: &crate::domain::Track, position_ms: i64, duration_ms: i64) -> serde_json::Value {
+    let https = |s: &str| s.starts_with("https://");
+    let mut value = serde_json::json!({
+        "title": track.title,
+        "artist": track.artist_line(),
+        "provider": serde_json::to_value(track.provider).unwrap_or_default(),
+        "positionMs": position_ms.max(0),
+    });
+    if duration_ms > 0 {
+        value["durationMs"] = duration_ms.into();
+    }
+    if let Some(album) = &track.album {
+        value["album"] = album.title.clone().into();
+    }
+    if let Some(art) = track.artwork_url.as_deref().filter(|a| https(a)) {
+        value["artworkUrl"] = art.into();
+    }
+    if https(&track.source_url) {
+        value["url"] = track.source_url.clone().into();
+    }
+    value
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -164,5 +194,25 @@ mod tests {
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["msPlayed"], 1);
         assert_eq!(json["playedAt"], "2026-11-05T00:00:00Z");
+    }
+
+    #[test]
+    fn now_playing_carries_the_song_and_only_https_links() {
+        let track = crate::domain::Track {
+            provider: crate::domain::ProviderType::YoutubeMusic,
+            id: "x".into(),
+            title: "One More Time".into(),
+            artists: vec![],
+            album: None,
+            duration_ms: Some(320_000),
+            artwork_url: Some("http://insecure/a.jpg".into()),
+            source_url: "https://music.youtube.com/watch?v=x".into(),
+        };
+        let value = now_playing_track(&track, 20_000, 320_000);
+        assert_eq!(value["title"], "One More Time");
+        assert_eq!(value["positionMs"], 20_000);
+        assert_eq!(value["durationMs"], 320_000);
+        assert!(value.get("artworkUrl").is_none(), "an http cover was sent");
+        assert_eq!(value["url"], "https://music.youtube.com/watch?v=x");
     }
 }
