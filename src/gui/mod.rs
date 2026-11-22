@@ -221,7 +221,7 @@ pub enum Action {
     AccountLogIn { email: String, password: String },
     AccountSignUp { email: String, password: String, name: String },
     AccountSignOut,
-    /// Sign in from a browser, with Discord, Telegram, GitHub or email; and giving that up.
+    /// Sign in from a browser, with Discord, Telegram or email; and giving that up.
     AccountBrowserSignIn,
     AccountBrowserSignInCancel,
     SetDeezerProfile(Option<String>),

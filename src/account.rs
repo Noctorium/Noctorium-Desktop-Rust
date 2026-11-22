@@ -138,7 +138,7 @@ pub fn submit(plays: &[PlayReport], token: &str) -> bool {
     matches!(send("POST", "/api/plays", Some(token), Some(serde_json::json!({"plays": plays}))), Ok((200..=299, _)))
 }
 
-/// Signing in from a browser -- with Discord, GitHub, Telegram or email: the code to show, the page to open, and the
+/// Signing in from a browser -- with Discord, Telegram or email: the code to show, the page to open, and the
 /// secret this app alone keeps to collect its token with once the listener has allowed it there.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DeviceStart {

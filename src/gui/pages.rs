@@ -1520,7 +1520,7 @@ pub(super) fn account_settings(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs
             ui.add_space(10.0);
             match &app.account_browser {
                 None => {
-                    if !app.account_busy && secondary(ui, &palette, "Sign in with Discord, Telegram or GitHub").clicked() {
+                    if !app.account_busy && secondary(ui, &palette, "Sign in with Discord or Telegram").clicked() {
                         actions.push(Action::AccountBrowserSignIn);
                     }
                 }
