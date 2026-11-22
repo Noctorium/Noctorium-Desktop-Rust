@@ -85,6 +85,12 @@ fn api_key() -> String {
     std::env::var("NOCTORIUM_LASTFM_API_KEY").ok().filter(|k| !k.trim().is_empty()).unwrap_or_else(|| "394c9c370aa8da3149db90cd4d9261a0".into())
 }
 
+/// Whether Last.fm is asked through Noctorium's own application, whose sessions every Noctorium -- and the account
+/// service -- can use; one named in the environment makes sessions only this program can.
+pub fn own_application() -> bool {
+    api_key() == "394c9c370aa8da3149db90cd4d9261a0"
+}
+
 fn shared_secret() -> String {
     std::env::var("NOCTORIUM_LASTFM_SHARED_SECRET")
         .ok()

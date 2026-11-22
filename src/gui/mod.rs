@@ -444,6 +444,8 @@ pub enum Event {
     YouTubeChanged { message: Result<String, String>, url: Option<String>, gone: bool },
     AccountSignedIn { result: Result<(crate::account::User, String), String>, quietly: bool },
     AccountBrowserCode(Result<crate::account::DeviceStart, String>),
+    /// What Last.fm and ListenBrainz the account has linked, asked on signing in, with the token it was asked with.
+    LinkedScrobblers(String, Result<crate::account::LinkedScrobblers, String>),
     AccountStats(Result<crate::account::Stats, String>),
     DeezerChart(Result<Chart, String>),
     DeezerProfile(Result<crate::deezer::Profile, String>),
@@ -1102,6 +1104,18 @@ impl App {
     // ---- threads ----------------------------------------------------------------------------------
 
     /// Runs `work` on a thread of its own and posts what it answers.
+    /// A Last.fm or ListenBrainz connection made here, saved to the Noctorium account when signed in to one, so every
+    /// other Noctorium signed in takes it too. Fire and forget: a missed one is saved at the next sign-in.
+    fn save_scrobbler_to_account(&self, site: crate::scrobble::Site, account: crate::scrobble::Account, token: Option<String>) {
+        let Some(token) = token.or_else(|| self.account.as_ref().map(|(_, t)| t.clone())) else { return };
+        if site == crate::scrobble::Site::LastFm && !crate::scrobble::own_application() {
+            return;
+        }
+        std::thread::spawn(move || {
+            crate::account::save_scrobbler(&token, site, &account);
+        });
+    }
+
     fn spawn(&self, work: impl FnOnce() -> Event + Send + 'static) {
         let events = self.events.clone();
         let ctx = self.host.clone();
@@ -2533,6 +2547,7 @@ impl App {
                     if let Ok(text) = serde_json::to_string(&account) {
                         crate::secrets::save(&self.places, site.secret_name(), &text);
                     }
+                    self.save_scrobbler_to_account(site, account.clone(), None);
                     self.scrobblers.insert(site, account);
                     self.authorizing = None;
                     self.toast(format!("{} connected as {username}", site.name()), false);
@@ -2544,6 +2559,7 @@ impl App {
                     if let Ok(text) = serde_json::to_string(&account) {
                         crate::secrets::save(&self.places, crate::scrobble::Site::ListenBrainz.secret_name(), &text);
                     }
+                    self.save_scrobbler_to_account(crate::scrobble::Site::ListenBrainz, account.clone(), None);
                     self.scrobblers.insert(crate::scrobble::Site::ListenBrainz, account);
                     self.toast(format!("ListenBrainz connected as {username}"), false);
                 }
@@ -2593,6 +2609,30 @@ impl App {
                 }
                 ServicePiece::YouTubeHome(_) => {}
             },
+            Event::LinkedScrobblers(token, Ok(linked)) => {
+                // What the account has and this program has not, connected here; what this program has and the account
+                // has not, saved to it. Disconnecting here later leaves the account's link alone.
+                use crate::scrobble::{Account, Site};
+                let wanted = [(Site::LastFm, linked.last_fm), (Site::ListenBrainz, linked.listen_brainz)];
+                for (site, link) in wanted {
+                    match (link, self.scrobblers.get(&site).cloned()) {
+                        (Some((username, secret)), None) => {
+                            if site == Site::LastFm && !crate::scrobble::own_application() {
+                                continue;
+                            }
+                            let account = Account { username: username.clone(), secret };
+                            if let Ok(text) = serde_json::to_string(&account) {
+                                crate::secrets::save(&self.places, site.secret_name(), &text);
+                            }
+                            self.scrobblers.insert(site, account);
+                            self.toast(format!("{} connected from your Noctorium account as {username}", site.name()), false);
+                        }
+                        (None, Some(here)) => self.save_scrobbler_to_account(site, here, Some(token.clone())),
+                        _ => {}
+                    }
+                }
+            }
+            Event::LinkedScrobblers(_, Err(_)) => {}
             Event::AccountBrowserCode(result) => {
                 self.account_busy = false;
                 match result {
@@ -2623,6 +2663,11 @@ impl App {
                         self.spawn(move || Event::ConnectKey(crate::account::connect_key(&for_key)));
                         crate::secrets::save(&self.places, "noctorium.token", &token);
                         if !quietly {
+                            let for_links = token.clone();
+                            self.spawn(move || {
+                                let linked = crate::account::scrobblers(&for_links);
+                                Event::LinkedScrobblers(for_links, linked)
+                            });
                             self.toast(format!("Signed in to Noctorium as {}", user.display_name), false);
                         }
                         self.account = Some((user, token));

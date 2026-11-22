@@ -214,6 +214,15 @@ mod device_tests {
     use super::*;
 
     #[test]
+    fn linked_scrobblers_are_read_and_a_missing_one_is_none() {
+        let body = serde_json::json!({"lastfm": {"username": "ana", "sessionKey": "sk"}, "listenbrainz": null});
+        assert_eq!(
+            linked_from(&body),
+            LinkedScrobblers { last_fm: Some(("ana".into(), "sk".into())), listen_brainz: None }
+        );
+    }
+
+    #[test]
     fn device_polls_read_as_the_service_means_them() {
         assert_eq!(device_poll_from(202, &serde_json::json!({"pending": true})), DevicePoll::Waiting);
         // An account made with Discord may have no email: it comes back empty, and still signs in.
@@ -223,6 +232,45 @@ mod device_tests {
         assert_eq!(device_poll_from(503, &serde_json::Value::Null), DevicePoll::Unreachable);
         assert!(matches!(device_poll_from(200, &serde_json::json!({})), DevicePoll::Over(_)));
     }
+}
+
+/// Last.fm and ListenBrainz as linked to the account, each as (username, session key or token): what this program
+/// connects itself with when it signs in.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LinkedScrobblers {
+    pub last_fm: Option<(String, String)>,
+    pub listen_brainz: Option<(String, String)>,
+}
+
+fn linked_from(body: &serde_json::Value) -> LinkedScrobblers {
+    let pair = |part: &serde_json::Value, secret: &str| {
+        Some((part["username"].as_str()?.to_string(), part[secret].as_str()?.to_string()))
+    };
+    LinkedScrobblers {
+        last_fm: pair(&body["lastfm"], "sessionKey"),
+        listen_brainz: pair(&body["listenbrainz"], "token"),
+    }
+}
+
+pub fn scrobblers(token: &str) -> Result<LinkedScrobblers, String> {
+    let (status, body) = send("GET", "/api/scrobblers", Some(token), None)?;
+    if !(200..300).contains(&status) {
+        return Err(format!("The Noctorium service would not say what is linked (HTTP {status})."));
+    }
+    Ok(linked_from(&body))
+}
+
+/// Saves a connection made in this program to the account, for every other Noctorium to take.
+pub fn save_scrobbler(token: &str, site: crate::scrobble::Site, account: &crate::scrobble::Account) -> bool {
+    let (path, body) = match site {
+        crate::scrobble::Site::LastFm => (
+            "/api/scrobblers/lastfm",
+            serde_json::json!({"username": account.username, "sessionKey": account.secret}),
+        ),
+        crate::scrobble::Site::ListenBrainz => ("/api/scrobblers/listenbrainz", serde_json::json!({"token": account.secret})),
+        crate::scrobble::Site::LibreFm => return false,
+    };
+    matches!(send("PUT", path, Some(token), Some(body)), Ok((200..=299, _)))
 }
 
 /// What is playing now, for the Discord status and Telegram bio the account service shows: the song, or null when
