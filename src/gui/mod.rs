@@ -221,6 +221,10 @@ pub enum Action {
     AccountLogIn { email: String, password: String },
     AccountSignUp { email: String, password: String, name: String },
     AccountSignOut,
+    /// The codes two-step verification asks for after the password; asking Telegram to send one; giving up.
+    AccountVerify { totp: String, telegram: String, backup: String },
+    AccountTelegramCode,
+    AccountVerifyCancel,
     /// Sign in from a browser, with Discord, Telegram or email; and giving that up.
     AccountBrowserSignIn,
     AccountBrowserSignInCancel,
@@ -446,6 +450,8 @@ pub enum Event {
     AccountBrowserCode(Result<crate::account::DeviceStart, String>),
     /// What Last.fm and ListenBrainz the account has linked, asked on signing in, with the token it was asked with.
     LinkedScrobblers(String, Result<crate::account::LinkedScrobblers, String>),
+    /// A sign-in waiting for its two-step codes.
+    AccountVerify(crate::account::Challenge),
     AccountStats(Result<crate::account::Stats, String>),
     DeezerChart(Result<Chart, String>),
     DeezerProfile(Result<crate::deezer::Profile, String>),
@@ -578,6 +584,11 @@ pub struct Inputs {
     pub account_password: String,
     pub account_name: String,
     pub account_new: bool,
+    pub verify_totp: String,
+    pub verify_telegram: String,
+    pub verify_backup: String,
+    pub verify_with_backup: bool,
+    pub verify_choice: Option<String>,
     pub search: String,
     pub focus_search: bool,
     /// What is typed in the radio country picker's box.
@@ -780,6 +791,8 @@ pub struct App {
     pub account_busy: bool,
     /// A browser sign-in waiting to be allowed, and the switch that stops its wait.
     pub account_browser: Option<(crate::account::DeviceStart, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
+    /// After the password, while two-step verification waits for its codes.
+    pub account_verify: Option<crate::account::Challenge>,
     unreported_plays: Vec<crate::account::PlayReport>,
 }
 
@@ -1016,6 +1029,7 @@ impl App {
             account_stats: None,
             account_busy: false,
             account_browser: None,
+            account_verify: None,
             unreported_plays: Vec::new(),
             settings,
         };
@@ -2651,8 +2665,18 @@ impl App {
                     Err(why) => self.toast(why, true),
                 }
             }
+            Event::AccountVerify(asked) => {
+                self.account_busy = false;
+                if let Some(words) = &asked.message {
+                    self.toast(words.clone(), true);
+                }
+                self.account_verify = Some(asked);
+            }
             Event::AccountSignedIn { result, quietly } => {
                 self.account_busy = false;
+                if result.is_ok() {
+                    self.account_verify = None;
+                }
                 if !(quietly && result.as_ref().is_err_and(String::is_empty)) {
                     self.account_browser = None;
                 }
@@ -3826,8 +3850,22 @@ impl App {
             }
             Action::AccountLogIn { email, password } => {
                 self.account_busy = true;
-                self.spawn(move || Event::AccountSignedIn { result: crate::account::log_in(&email, &password), quietly: false });
+                self.spawn(move || outcome_event(crate::account::log_in(&email, &password)));
             }
+            Action::AccountVerify { totp, telegram, backup } => {
+                let Some(asked) = self.account_verify.clone() else { return };
+                self.account_busy = true;
+                self.spawn(move || outcome_event(crate::account::verify(&asked, &totp, &telegram, &backup)));
+            }
+            Action::AccountTelegramCode => {
+                if let Some(asked) = self.account_verify.clone() {
+                    match crate::account::send_telegram_code(&asked) {
+                        Ok(()) => self.toast("Sent. Check Telegram for the code.", false),
+                        Err(why) => self.toast(why, true),
+                    }
+                }
+            }
+            Action::AccountVerifyCancel => self.account_verify = None,
             Action::AccountBrowserSignIn => {
                 self.account_busy = true;
                 self.spawn(|| Event::AccountBrowserCode(crate::account::start_device_sign_in()));
@@ -3839,10 +3877,7 @@ impl App {
             }
             Action::AccountSignUp { email, password, name } => {
                 self.account_busy = true;
-                self.spawn(move || Event::AccountSignedIn {
-                    result: crate::account::sign_up(&email, &password, &name),
-                    quietly: false,
-                });
+                self.spawn(move || outcome_event(crate::account::sign_up(&email, &password, &name)));
             }
             Action::AppleSignIn => {
                 let Some(browser) = self.settings.cookies_browser.clone() else {
@@ -4845,4 +4880,13 @@ fn google_token(places: &store::Places, cloud: &crate::noctplaylists::CloudSetti
         crate::secrets::save(places, GOOGLE_TOKENS, &text);
     }
     Ok(fresh.access_token)
+}
+
+/// What a sign-in came to, as the window's events: signed in, refused, or two-step verification asking for a code.
+fn outcome_event(result: Result<crate::account::Outcome, String>) -> Event {
+    match result {
+        Ok(crate::account::Outcome::SignedIn(user, token)) => Event::AccountSignedIn { result: Ok((user, token)), quietly: false },
+        Ok(crate::account::Outcome::Verify(asked)) => Event::AccountVerify(asked),
+        Err(why) => Event::AccountSignedIn { result: Err(why), quietly: false },
+    }
 }

@@ -4,12 +4,70 @@
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-pub fn service_url() -> String {
+fn service_override() -> Option<String> {
     std::env::var("NOCTORIUM_SERVICE_URL")
         .ok()
         .map(|u| u.trim().trim_end_matches('/').to_string())
         .filter(|u| !u.is_empty())
-        .unwrap_or_else(|| "https://noctorium-service.vercel.app".into())
+}
+
+/// Listening statistics: listens reported, figures read, what is playing.
+pub fn service_url() -> String {
+    service_override().unwrap_or_else(|| "https://stats.noctorium.xyz".into())
+}
+
+/// Signing in and everything else about the account: its own server since 0.39.
+pub fn account_url() -> String {
+    service_override().unwrap_or_else(|| "https://account.noctorium.xyz".into())
+}
+
+/// Which server [path] belongs to: listening goes to the stats server, the rest to the account server.
+fn server_for(path: &str) -> String {
+    let stats = ["/api/stats", "/api/plays", "/api/now-playing", "/api/scrobble"]
+        .iter()
+        .any(|p| path == *p || path.starts_with(&format!("{p}?")));
+    if stats { service_url() } else { account_url() }
+}
+
+/// Two-step verification, asked for after the password: the ways the account can be verified ("totp" for an
+/// authenticator app, "telegram" for a code the login bot sends), whether strict mode needs them all, what is proved
+/// already, and the service's words about the last try.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Challenge {
+    pub ticket: String,
+    pub methods: Vec<String>,
+    pub strict: bool,
+    pub done: Vec<String>,
+    pub message: Option<String>,
+}
+
+impl Challenge {
+    /// What is still to be given: in strict mode every way not yet proved, otherwise any one of them.
+    pub fn still_needed(&self) -> Vec<String> {
+        if self.strict {
+            self.methods.iter().filter(|m| !self.done.contains(m)).cloned().collect()
+        } else {
+            self.methods.clone()
+        }
+    }
+}
+
+/// What a sign-in came to: signed in, or a code is asked for first.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Outcome {
+    SignedIn(User, String),
+    Verify(Challenge),
+}
+
+fn challenge_from(answer: &serde_json::Value, message: Option<String>) -> Option<Challenge> {
+    let ticket = answer["challenge"].as_str().filter(|t| !t.is_empty())?.to_string();
+    let list = |name: &str| {
+        answer[name]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default()
+    };
+    Some(Challenge { ticket, methods: list("methods"), strict: answer["strict"].as_bool() == Some(true), done: list("done"), message })
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -48,7 +106,7 @@ pub fn listen_counts(heard_ms: i64, duration_ms: i64) -> bool {
 }
 
 fn send(method: &str, path: &str, token: Option<&str>, body: Option<serde_json::Value>) -> Result<(u16, serde_json::Value), String> {
-    let mut request = ureq::request(method, &format!("{}{path}", service_url()))
+    let mut request = ureq::request(method, &format!("{}{path}", server_for(path)))
         .set("Accept", "application/json")
         .set("User-Agent", concat!("Noctorium-Rust/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20));
@@ -79,24 +137,50 @@ fn user_from(node: &serde_json::Value) -> Option<User> {
     Some(User { id, email, display_name })
 }
 
-fn authenticate(path: &str, body: serde_json::Value) -> Result<(User, String), String> {
+fn authenticate(path: &str, body: serde_json::Value) -> Result<Outcome, String> {
     let (status, answer) = send("POST", path, None, Some(body))?;
+    // Two-step verification: the password was right, and a code comes next. The first answer's `error` is worded for
+    // apps too old to ask for one; a later one's says what was wrong with the code.
+    let words = answer["error"].as_str().filter(|_| path.ends_with("/verify")).map(String::from);
+    if let Some(asked) = challenge_from(&answer, words) {
+        return Ok(Outcome::Verify(asked));
+    }
     if !(200..300).contains(&status) {
         return Err(answer["error"].as_str().map(String::from).unwrap_or_else(|| format!("The service refused that (HTTP {status}).")));
     }
     let token = answer["token"].as_str().filter(|t| !t.is_empty()).ok_or("The service replied with something unexpected.")?;
     let user = user_from(&answer["user"]).ok_or("The service replied with something unexpected.")?;
-    Ok((user, token.to_string()))
+    Ok(Outcome::SignedIn(user, token.to_string()))
 }
 
-pub fn sign_up(email: &str, password: &str, display_name: &str) -> Result<(User, String), String> {
+/// The codes for [asked]'s sign-in; whichever are given count.
+pub fn verify(asked: &Challenge, totp: &str, telegram: &str, backup: &str) -> Result<Outcome, String> {
+    let mut body = serde_json::json!({ "challenge": asked.ticket });
+    for (name, code) in [("totp", totp), ("telegram", telegram), ("backup", backup)] {
+        if !code.trim().is_empty() {
+            body[name] = code.trim().into();
+        }
+    }
+    authenticate("/api/auth/challenge/verify", body)
+}
+
+/// Asks the login bot to send [asked]'s code on Telegram.
+pub fn send_telegram_code(asked: &Challenge) -> Result<(), String> {
+    let (status, answer) = send("POST", "/api/auth/challenge/telegram", None, Some(serde_json::json!({ "challenge": asked.ticket })))?;
+    if (200..300).contains(&status) {
+        return Ok(());
+    }
+    Err(answer["error"].as_str().unwrap_or("The code could not be sent.").to_string())
+}
+
+pub fn sign_up(email: &str, password: &str, display_name: &str) -> Result<Outcome, String> {
     authenticate(
         "/api/auth/signup",
         serde_json::json!({"email": email.trim(), "password": password, "displayName": display_name.trim()}),
     )
 }
 
-pub fn log_in(email: &str, password: &str) -> Result<(User, String), String> {
+pub fn log_in(email: &str, password: &str) -> Result<Outcome, String> {
     authenticate("/api/auth/login", serde_json::json!({"email": email.trim(), "password": password}))
 }
 
@@ -212,6 +296,25 @@ pub fn wait_for_device_sign_in(start: &DeviceStart, cancelled: &std::sync::atomi
 #[cfg(test)]
 mod device_tests {
     use super::*;
+
+    #[test]
+    fn a_challenge_is_read_and_strict_mode_needs_what_is_not_done() {
+        let answer = serde_json::json!({"error": "old apps' words", "challenge": "t1", "methods": ["totp", "telegram"], "strict": true, "done": ["totp"]});
+        let asked = challenge_from(&answer, None).unwrap();
+        assert_eq!(asked.still_needed(), vec!["telegram".to_string()]);
+        assert_eq!(asked.message, None);
+        let either = Challenge { strict: false, done: vec![], ..asked };
+        assert_eq!(either.still_needed().len(), 2);
+        assert!(challenge_from(&serde_json::json!({"error": "no"}), None).is_none());
+    }
+
+    #[test]
+    fn listening_goes_to_stats_and_the_rest_to_the_account() {
+        assert_eq!(server_for("/api/plays"), service_url());
+        assert_eq!(server_for("/api/stats?range=all"), service_url());
+        assert_eq!(server_for("/api/auth/login"), account_url());
+        assert_eq!(server_for("/api/scrobblers/lastfm"), account_url());
+    }
 
     #[test]
     fn linked_scrobblers_are_read_and_a_missing_one_is_none() {

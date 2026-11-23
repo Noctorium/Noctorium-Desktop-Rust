@@ -1481,6 +1481,10 @@ pub(super) fn account_settings(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs
                 }
                 return;
             }
+            if let Some(asked) = &app.account_verify {
+                verification(ui, app, inputs, actions, asked);
+                return;
+            }
             ui.horizontal(|ui| {
                 ui.selectable_value(&mut inputs.account_new, false, "Sign in");
                 ui.selectable_value(&mut inputs.account_new, true, "Make an account");
@@ -3010,4 +3014,72 @@ fn connect_page(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut
         ui.add_space(6.0);
     }
     ui.ctx().request_repaint_after(std::time::Duration::from_secs(1));
+}
+
+/// Two-step verification, after the password: a code from the authenticator app, one the login bot sends on Telegram, or
+/// a backup code. With both ways on, either one this time; in strict mode, both.
+fn verification(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<Action>, asked: &crate::account::Challenge) {
+    let palette = app.palette;
+    ui.label(RichText::new(if asked.strict { "Strict mode is on: this sign-in needs both codes." } else { "Two-step verification: enter a code to finish signing in." }).color(palette.subtext));
+    ui.add_space(6.0);
+    let chosen = inputs.verify_choice.clone().filter(|c| asked.methods.contains(c)).unwrap_or_else(|| asked.methods.first().cloned().unwrap_or_default());
+    if !asked.strict && asked.methods.len() > 1 && !inputs.verify_with_backup {
+        ui.horizontal(|ui| {
+            for way in &asked.methods {
+                let label = if way == "totp" { "Authenticator app" } else { "Telegram" };
+                if ui.selectable_label(&chosen == way, label).clicked() {
+                    inputs.verify_choice = Some(way.clone());
+                }
+            }
+        });
+    }
+    let wanted: Vec<String> = if inputs.verify_with_backup {
+        vec!["backup".into()]
+    } else if asked.strict {
+        asked.still_needed()
+    } else {
+        vec![chosen]
+    };
+    egui::Grid::new("verify").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
+        for way in &wanted {
+            let (label, field) = match way.as_str() {
+                "totp" => ("Authenticator code", &mut inputs.verify_totp),
+                "telegram" => ("Telegram code", &mut inputs.verify_telegram),
+                _ => ("Backup code", &mut inputs.verify_backup),
+            };
+            ui.label(label);
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(field).desired_width(160.0));
+                if way == "telegram" && secondary(ui, &palette, "Send me a code").clicked() {
+                    actions.push(Action::AccountTelegramCode);
+                }
+            });
+            ui.end_row();
+        }
+    });
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        if app.account_busy {
+            ui.add(egui::Spinner::new().color(palette.accent));
+            return;
+        }
+        let ready = wanted.iter().all(|w| match w.as_str() {
+            "totp" => !inputs.verify_totp.trim().is_empty(),
+            "telegram" => !inputs.verify_telegram.trim().is_empty(),
+            _ => !inputs.verify_backup.trim().is_empty(),
+        });
+        if primary(ui, &palette, "Continue").clicked() && ready {
+            actions.push(Action::AccountVerify {
+                totp: if wanted.contains(&"totp".to_string()) { std::mem::take(&mut inputs.verify_totp) } else { String::new() },
+                telegram: if wanted.contains(&"telegram".to_string()) { std::mem::take(&mut inputs.verify_telegram) } else { String::new() },
+                backup: if inputs.verify_with_backup { std::mem::take(&mut inputs.verify_backup) } else { String::new() },
+            });
+        }
+        if secondary(ui, &palette, if inputs.verify_with_backup { "Use my app or Telegram" } else { "Use a backup code" }).clicked() {
+            inputs.verify_with_backup = !inputs.verify_with_backup;
+        }
+        if secondary(ui, &palette, "Cancel").clicked() {
+            actions.push(Action::AccountVerifyCancel);
+        }
+    });
 }
