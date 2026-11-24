@@ -222,6 +222,15 @@ choice!(
 );
 
 choice!(
+    /// Where Settings is opened from: a gear on Home beside the profile picture, or the sidebar.
+    SettingsButton {
+        #[default]
+        Home => ("Home screen", "A gear at the top of Home, beside your picture; Settings leaves the sidebar."),
+        Toolbar => ("Sidebar", "Settings in the sidebar, as it always was; Home shows only your picture."),
+    }
+);
+
+choice!(
     SurfaceStyle {
         #[default]
         Solid => ("Solid", "Panels and cards in the theme's own colours."),
@@ -647,6 +656,7 @@ pub struct Looks {
     pub status_bar: bool,
     pub hidden_home: Vec<HomePart>,
     pub hidden_pages: Vec<SidebarPage>,
+    pub settings_button: SettingsButton,
     /// The listener's own picture behind the secret Shadow theme, as this computer's copy of it; empty for none.
     pub shadow_picture: String,
 }
@@ -690,6 +700,7 @@ impl Default for Looks {
             status_bar: true,
             hidden_home: vec![],
             hidden_pages: vec![],
+            settings_button: SettingsButton::default(),
             shadow_picture: String::new(),
         }
     }

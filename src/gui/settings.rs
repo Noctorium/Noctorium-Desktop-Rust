@@ -536,7 +536,7 @@ const INDEX: &[Entry] = &[
     e(P::Browsing, "Play and menu buttons", Some("Browsing"), "Whether a card's buttons are always there or only when pointed at.", "hover buttons card buttons"),
     e(P::Browsing, "Parts of Home", Some("On Home"), "Which rows Home shows: the greeting, pinned songs, played lately and each service's shelves.", "home page home screen hide home rows shelves greeting recently played pinned"),
     e(P::Browsing, "Search", Some("Search"), "Where search goes when no bang says, and which services a search of all of them asks.", "search default bang hybrid search all services !all"),
-    e(P::Browsing, "Pages in the sidebar", Some("In the sidebar"), "Which pages the sidebar offers. Home and Settings always stay.", "sidebar navigation menu hide pages rail"),
+    e(P::Browsing, "Pages in the sidebar", Some("In the sidebar"), "Which pages the sidebar offers, and whether Settings is there or a gear on Home.", "sidebar navigation menu hide pages rail settings button gear toolbar home screen"),
     e(P::Sound, "Equaliser", Some("Equaliser"), "Ten bands from the deepest bass to the air above the cymbals, and presets to start from.", "equalizer eq bass treble bass boost tone frequencies preset preamp rock pop jazz"),
     e(P::Sound, "Volume booster", Some("Volume booster"), "Louder than full volume, up to 1000%, behind a limiter so it gets loud, not broken.", "louder boost volume boost amplify amplifier gain quiet songs too quiet 1000%"),
     e(P::Sound, "Even out loudness", Some("Loudness"), "Songs play at about the same volume.", "normalise normalize loudness replaygain volume level"),
@@ -1218,9 +1218,10 @@ fn browsing(ui: &mut Ui, app: &App, actions: &mut Vec<Action>) {
             )
         });
     });
-    group(ui, app, "In the sidebar", Some("Which pages the sidebar offers. Home and Settings always stay."), |ui| {
+    group(ui, app, "In the sidebar", Some("Which pages the sidebar offers. Home always stays."), |ui| {
         with_looks(app, actions, |looks| {
-            ui.horizontal_wrapped(|ui| ticks(ui, &mut looks.hidden_pages, &crate::looks::SidebarPage::ALL, |p| p.label(), true)).inner
+            let changed = choices(ui, &palette, "Settings button", &mut looks.settings_button);
+            changed | ui.horizontal_wrapped(|ui| ticks(ui, &mut looks.hidden_pages, &crate::looks::SidebarPage::ALL, |p| p.label(), true)).inner
         });
     });
 }

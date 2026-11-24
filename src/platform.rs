@@ -51,6 +51,46 @@ pub fn tie_children_to_this_process() {
 #[cfg(not(windows))]
 pub fn tie_children_to_this_process() {}
 
+/// The system's own Open dialog for a picture: the file chosen, or None when it was cancelled or there is no dialog.
+/// Blocking: run it off the interface's thread.
+// shortcut: the system's dialog through its own scripting (PowerShell, AppleScript, zenity or kdialog) rather than a
+// dialog crate; switch to rfd if a Linux desktop without zenity or kdialog turns out to matter.
+pub fn pick_picture() -> Option<std::path::PathBuf> {
+    use std::process::Command;
+    let tries: Vec<Command> = if cfg!(windows) {
+        let mut c = Command::new("powershell");
+        c.args([
+            "-NoProfile",
+            "-STA",
+            "-Command",
+            "Add-Type -AssemblyName System.Windows.Forms; $d = New-Object System.Windows.Forms.OpenFileDialog; \
+             $d.Filter = 'Pictures|*.jpg;*.jpeg;*.png;*.webp'; if ($d.ShowDialog() -eq 'OK') { $d.FileName }",
+        ]);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            c.creation_flags(0x0800_0000); // CREATE_NO_WINDOW: no console flashing up behind the dialog
+        }
+        vec![c]
+    } else if cfg!(target_os = "macos") {
+        let mut c = Command::new("osascript");
+        c.args(["-e", "POSIX path of (choose file of type {\"public.image\"} with prompt \"Choose a picture\")"]);
+        vec![c]
+    } else {
+        let mut zenity = Command::new("zenity");
+        zenity.args(["--file-selection", "--title=Choose a picture", "--file-filter=*.jpg *.jpeg *.png *.webp"]);
+        let mut kdialog = Command::new("kdialog");
+        kdialog.args(["--getopenfilename", ".", "*.jpg *.jpeg *.png *.webp"]);
+        vec![zenity, kdialog]
+    };
+    for mut command in tries {
+        let Ok(out) = command.output() else { continue };
+        let path = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        return (!path.is_empty()).then(|| path.into());
+    }
+    None
+}
+
 /// A media key on the keyboard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MediaKey {

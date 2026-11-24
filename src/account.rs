@@ -70,11 +70,19 @@ fn challenge_from(answer: &serde_json::Value, message: Option<String>) -> Option
     Some(Challenge { ticket, methods: list("methods"), strict: answer["strict"].as_bool() == Some(true), done: list("done"), message })
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct User {
     pub id: i64,
     pub email: String,
     pub display_name: String,
+    /// The profile picture, when there is one.
+    pub avatar_url: Option<String>,
+    /// Whether a change of email or password, or deleting the account, asks for the password.
+    pub has_password: bool,
+    /// Two-step verification as it is on: (authenticator, Telegram). Either asks for a code with those changes.
+    pub two_step: (bool, bool),
+    /// What the account is linked to, for its picture: (Discord, Telegram).
+    pub linked: (bool, bool),
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -105,18 +113,26 @@ pub fn listen_counts(heard_ms: i64, duration_ms: i64) -> bool {
     heard_ms >= needed
 }
 
-fn send(method: &str, path: &str, token: Option<&str>, body: Option<serde_json::Value>) -> Result<(u16, serde_json::Value), String> {
-    let mut request = ureq::request(method, &format!("{}{path}", server_for(path)))
+fn request(method: &str, path: &str, token: Option<&str>) -> ureq::Request {
+    let request = ureq::request(method, &format!("{}{path}", server_for(path)))
         .set("Accept", "application/json")
         .set("User-Agent", concat!("Noctorium-Rust/", env!("CARGO_PKG_VERSION")))
         .timeout(Duration::from_secs(20));
-    if let Some(token) = token.filter(|t| !t.is_empty()) {
-        request = request.set("Authorization", &format!("Bearer {token}"));
+    match token.filter(|t| !t.is_empty()) {
+        Some(token) => request.set("Authorization", &format!("Bearer {token}")),
+        None => request,
     }
-    let reply = match body {
+}
+
+fn send(method: &str, path: &str, token: Option<&str>, body: Option<serde_json::Value>) -> Result<(u16, serde_json::Value), String> {
+    let request = request(method, path, token);
+    read_reply(match body {
         Some(body) => request.send_json(body),
         None => request.call(),
-    };
+    })
+}
+
+fn read_reply(reply: Result<ureq::Response, ureq::Error>) -> Result<(u16, serde_json::Value), String> {
     match reply {
         Ok(r) => {
             let status = r.status();
@@ -134,7 +150,16 @@ fn user_from(node: &serde_json::Value) -> Option<User> {
         .as_str()
         .map(String::from)
         .unwrap_or_else(|| email.split('@').next().unwrap_or("").to_string());
-    Some(User { id, email, display_name })
+    let pair = |part: &serde_json::Value, a: &str, b: &str| (part[a].as_bool() == Some(true), part[b].as_bool() == Some(true));
+    Some(User {
+        id,
+        email,
+        display_name,
+        avatar_url: node["avatarUrl"].as_str().filter(|u| !u.is_empty()).map(String::from),
+        has_password: node["hasPassword"].as_bool() == Some(true),
+        two_step: pair(&node["twoStep"], "totp", "telegram"),
+        linked: pair(&node["linked"], "discord", "telegram"),
+    })
 }
 
 fn authenticate(path: &str, body: serde_json::Value) -> Result<Outcome, String> {
@@ -190,6 +215,43 @@ pub fn who_am_i(token: &str) -> Result<User, String> {
         return Err("The Noctorium account needs signing in again.".into());
     }
     user_from(&answer["user"]).ok_or_else(|| "The service did not say who is signed in.".into())
+}
+
+/// The service's answer when it is a success, its words when not.
+fn accepted((status, answer): (u16, serde_json::Value)) -> Result<serde_json::Value, String> {
+    if (200..300).contains(&status) {
+        return Ok(answer);
+    }
+    Err(answer["error"].as_str().map(String::from).unwrap_or_else(|| format!("The service refused that (HTTP {status}).")))
+}
+
+/// One change to the account, as the website's Profile section makes it: `{"action": "name" | "email" | "password" |
+/// "delete" | "avatar-discord" | "avatar-telegram" | "avatar-remove", ...}`. A change of email or password answers with a
+/// fresh `token`: every other sign-in, this one's old token among them, has just ended.
+pub fn change_profile(token: &str, change: serde_json::Value) -> Result<serde_json::Value, String> {
+    accepted(send("POST", "/api/account/profile", Some(token), Some(change))?)
+}
+
+/// A new profile picture, already a JPEG: its link.
+pub fn upload_avatar(token: &str, jpeg: &[u8]) -> Result<String, String> {
+    let reply = read_reply(request("POST", "/api/account/avatar", Some(token)).set("Content-Type", "image/jpeg").send_bytes(jpeg))?;
+    accepted(reply)?["avatarUrl"].as_str().map(String::from).ok_or_else(|| "The service replied with something unexpected.".into())
+}
+
+/// Asks the login bot to send a code on Telegram, for a change that asks for one.
+pub fn send_change_code(token: &str) -> Result<(), String> {
+    accepted(send("POST", "/api/account/security", Some(token), Some(serde_json::json!({ "action": "telegram-send" })))?).map(|_| ())
+}
+
+/// A picture as the account keeps one: the middle square of it, 256 pixels across, as a JPEG.
+pub fn avatar_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
+    let picture = image::load_from_memory(bytes).map_err(|_| "That is not a picture Noctorium can read (JPEG, PNG or WebP).".to_string())?;
+    let side = picture.width().min(picture.height());
+    let square = picture.crop_imm((picture.width() - side) / 2, (picture.height() - side) / 2, side, side);
+    let small = square.resize_exact(256, 256, image::imageops::FilterType::Lanczos3).to_rgb8();
+    let mut out = std::io::Cursor::new(Vec::new());
+    image::codecs::jpeg::JpegEncoder::new_with_quality(&mut out, 88).encode_image(&small).map_err(|e| e.to_string())?;
+    Ok(out.into_inner())
 }
 
 pub fn stats(token: &str) -> Result<Stats, String> {
@@ -309,6 +371,29 @@ mod device_tests {
     }
 
     #[test]
+    fn me_carries_the_picture_and_what_a_change_asks_for() {
+        let node = serde_json::json!({"id": 3, "email": "a@b.c", "displayName": "Ana", "avatarUrl": "https://x/avatar/k",
+            "hasPassword": true, "twoStep": {"totp": false, "telegram": true}, "linked": {"discord": true, "telegram": false}});
+        let user = user_from(&node).unwrap();
+        assert_eq!(user.avatar_url.as_deref(), Some("https://x/avatar/k"));
+        assert!(user.has_password);
+        assert_eq!((user.two_step, user.linked), ((false, true), (true, false)));
+        assert_eq!(user_from(&serde_json::json!({"id": 3, "email": "", "avatarUrl": null})).unwrap().avatar_url, None);
+    }
+
+    #[test]
+    fn a_picture_becomes_a_256_square_jpeg() {
+        let wide = image::RgbImage::from_pixel(600, 300, image::Rgb([200, 40, 90]));
+        let mut png = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgb8(wide).write_to(&mut png, image::ImageFormat::Png).unwrap();
+        let jpeg = avatar_jpeg(png.get_ref()).unwrap();
+        assert_eq!(&jpeg[..3], &[0xff, 0xd8, 0xff]);
+        let back = image::load_from_memory(&jpeg).unwrap();
+        assert_eq!((back.width(), back.height()), (256, 256));
+        assert!(avatar_jpeg(b"not a picture").is_err());
+    }
+
+    #[test]
     fn listening_goes_to_stats_and_the_rest_to_the_account() {
         assert_eq!(server_for("/api/plays"), service_url());
         assert_eq!(server_for("/api/stats?range=all"), service_url());
@@ -330,7 +415,7 @@ mod device_tests {
         assert_eq!(device_poll_from(202, &serde_json::json!({"pending": true})), DevicePoll::Waiting);
         // An account made with Discord may have no email: it comes back empty, and still signs in.
         let ok = serde_json::json!({"token": "tok", "user": {"id": 9, "email": "", "displayName": "Disco"}});
-        assert_eq!(device_poll_from(200, &ok), DevicePoll::SignedIn(User { id: 9, email: String::new(), display_name: "Disco".into() }, "tok".into()));
+        assert_eq!(device_poll_from(200, &ok), DevicePoll::SignedIn(User { id: 9, display_name: "Disco".into(), ..User::default() }, "tok".into()));
         assert_eq!(device_poll_from(410, &serde_json::json!({"error": "Expired."})), DevicePoll::Over("Expired.".into()));
         assert_eq!(device_poll_from(503, &serde_json::Value::Null), DevicePoll::Unreachable);
         assert!(matches!(device_poll_from(200, &serde_json::json!({})), DevicePoll::Over(_)));

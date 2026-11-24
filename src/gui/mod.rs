@@ -122,6 +122,8 @@ pub enum Page {
     Services,
     /// The profile: its name, and the history of what was played here, by day.
     Profile,
+    /// The Noctorium account: signing in and out, its picture, name, email and password, and deleting it.
+    Account,
 }
 
 /// What a frame's drawing asked for.
@@ -228,6 +230,12 @@ pub enum Action {
     /// Sign in from a browser, with Discord, Telegram or email; and giving that up.
     AccountBrowserSignIn,
     AccountBrowserSignInCancel,
+    /// One change to the account, as `account::change_profile` sends it.
+    AccountProfile(serde_json::Value),
+    /// A picture from this computer, chosen in the system's dialog, as the account's.
+    AccountPickAvatar,
+    /// Asks Telegram for the code a change to the account needs.
+    AccountChangeCode,
     SetDeezerProfile(Option<String>),
     SpotifySignIn,
     SetShortcut { id: &'static str, global: bool, chord: Option<String> },
@@ -453,6 +461,9 @@ pub enum Event {
     /// A sign-in waiting for its two-step codes.
     AccountVerify(crate::account::Challenge),
     AccountStats(Result<crate::account::Stats, String>),
+    /// What a change to the account came to: its `action` ("avatar" for an upload, "code" for a Telegram code) and the
+    /// service's answer. An empty error is a cancelled picture, said nothing about.
+    AccountProfile { action: String, result: Result<serde_json::Value, String> },
     DeezerChart(Result<Chart, String>),
     DeezerProfile(Result<crate::deezer::Profile, String>),
     BandcampDiscover { newest: bool, result: Result<Vec<Track>, String> },
@@ -589,6 +600,14 @@ pub struct Inputs {
     pub verify_backup: String,
     pub verify_with_backup: bool,
     pub verify_choice: Option<String>,
+    /// The account page's fields: a new name, email and password, the password and code that prove a change, and the
+    /// words that confirm deleting.
+    pub account_rename: Option<String>,
+    pub account_new_email: String,
+    pub account_new_password: String,
+    pub account_current: String,
+    pub account_code: String,
+    pub account_confirm: String,
     pub search: String,
     pub focus_search: bool,
     /// What is typed in the radio country picker's box.
@@ -2665,6 +2684,42 @@ impl App {
                     Err(why) => self.toast(why, true),
                 }
             }
+            Event::AccountProfile { action, result } => {
+                self.account_busy = false;
+                match result {
+                    Err(why) if why.is_empty() => {}
+                    Err(why) => self.toast(why, true),
+                    Ok(_) if action == "code" => self.toast("Sent. Check Telegram for the code.", false),
+                    Ok(_) if action == "delete" => {
+                        self.perform(Action::AccountSignOut);
+                        self.toast("Your Noctorium account is deleted", false);
+                    }
+                    Ok(answer) => {
+                        if let Some((user, token)) = &mut self.account {
+                            if let Some(name) = answer["name"].as_str() {
+                                user.display_name = name.into();
+                            }
+                            if let Some(email) = answer["email"].as_str() {
+                                user.email = email.into();
+                            }
+                            if answer.get("avatarUrl").is_some() {
+                                user.avatar_url = answer["avatarUrl"].as_str().map(String::from);
+                            }
+                            // An email or password change ended every sign-in: this one carries on with the new token.
+                            if let Some(fresh) = answer["token"].as_str().filter(|t| !t.is_empty()) {
+                                *token = fresh.into();
+                                crate::secrets::save(&self.places, "noctorium.token", fresh);
+                            }
+                        }
+                        let inputs = &mut self.inputs;
+                        inputs.account_rename = None;
+                        for field in [&mut inputs.account_new_email, &mut inputs.account_new_password, &mut inputs.account_current, &mut inputs.account_code] {
+                            field.clear();
+                        }
+                        self.toast("Saved to your Noctorium account", false);
+                    }
+                }
+            }
             Event::AccountVerify(asked) => {
                 self.account_busy = false;
                 if let Some(words) = &asked.message {
@@ -3874,6 +3929,34 @@ impl App {
                 if let Some((_, stop)) = self.account_browser.take() {
                     stop.store(true, std::sync::atomic::Ordering::Relaxed);
                 }
+            }
+            Action::AccountProfile(change) => {
+                let Some((_, token)) = self.account.clone() else { return };
+                self.account_busy = true;
+                let action = change["action"].as_str().unwrap_or_default().to_string();
+                self.spawn(move || Event::AccountProfile { action, result: crate::account::change_profile(&token, change) });
+            }
+            Action::AccountPickAvatar => {
+                let Some((_, token)) = self.account.clone() else { return };
+                self.account_busy = true;
+                self.spawn(move || {
+                    let result = match crate::platform::pick_picture() {
+                        None => Err(String::new()),
+                        Some(path) => std::fs::read(&path)
+                            .map_err(|e| format!("Could not read that picture: {e}"))
+                            .and_then(|bytes| crate::account::avatar_jpeg(&bytes))
+                            .and_then(|jpeg| crate::account::upload_avatar(&token, &jpeg))
+                            .map(|url| serde_json::json!({ "avatarUrl": url })),
+                    };
+                    Event::AccountProfile { action: "avatar".into(), result }
+                });
+            }
+            Action::AccountChangeCode => {
+                let Some((_, token)) = self.account.clone() else { return };
+                self.spawn(move || Event::AccountProfile {
+                    action: "code".into(),
+                    result: crate::account::send_change_code(&token).map(|()| serde_json::Value::Null),
+                });
             }
             Action::AccountSignUp { email, password, name } => {
                 self.account_busy = true;

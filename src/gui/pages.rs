@@ -49,8 +49,8 @@ pub fn rail(app: &App, ctx: &egui::Context, actions: &mut Vec<Action>) {
                 ("👤", "Profile", Page::Profile, Some(S::Profile)),
                 ("⚙", "Settings", Page::Settings, None),
             ] {
-                // Home and Settings always stay; the rest as Settings › Browsing has them.
-                if part.is_some_and(|p| !app.settings.looks.shows_page(p)) {
+                // Home always stays, and Settings unless its gear is on Home; the rest as Settings › Browsing has them.
+                if part.is_some_and(|p| !app.settings.looks.shows_page(p)) || (target == Page::Settings && settings_on_home(app)) {
                     continue;
                 }
                 let lit = *page == target || (target == Page::Settings && matches!(page, Page::SettingsAt(_)));
@@ -228,6 +228,7 @@ pub fn central(app: &App, ctx: &egui::Context, inputs: &mut Inputs, actions: &mu
                     }
                     match app.page.clone() {
                         Page::Profile => profile_page(ui, app, inputs, actions),
+                        Page::Account => account_page(ui, app, inputs, actions),
                         Page::Home => home(ui, app, actions),
                         Page::Search => search(ui, app, inputs, actions),
                         Page::Library => library(ui, app, inputs, actions),
@@ -300,6 +301,18 @@ fn home(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
         };
         ui.label(RichText::new(words).font(theme::bold(30.0)).color(palette.text));
         ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            // Right to left: the picture at the edge, the gear before it, then Refresh.
+            let user = app.account.as_ref().map(|(user, _)| user);
+            let shown_name = user.map_or(app.settings.profile_name.as_str(), |u| u.display_name.as_str());
+            if avatar(ui, &palette, user.and_then(|u| u.avatar_url.as_deref()), shown_name, 36.0)
+                .on_hover_text(if user.is_some() { "Your Noctorium account" } else { "Sign in to Noctorium" })
+                .clicked()
+            {
+                actions.push(Action::Open(Page::Account));
+            }
+            if settings_on_home(app) && secondary(ui, &palette, "⚙").on_hover_text("Settings").clicked() {
+                actions.push(Action::Open(Page::Settings));
+            }
             if secondary(ui, &palette, "⟳  Refresh").clicked() {
                 actions.push(Action::RefreshHome);
             }
@@ -337,6 +350,159 @@ fn home(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
             },
         }
     }
+}
+
+fn settings_on_home(app: &App) -> bool {
+    app.settings.looks.settings_button == crate::looks::SettingsButton::Home
+}
+
+/// The account's picture in a circle of `size`, or the first letter of `name` when it has none.
+fn avatar(ui: &mut egui::Ui, palette: &theme::Palette, url: Option<&str>, name: &str, size: f32) -> egui::Response {
+    let (rect, response) = ui.allocate_exact_size(vec2(size, size), egui::Sense::click());
+    if url.is_some() {
+        widgets::paint_artwork_exact(ui, palette, url, rect, (size / 2.0) as u8);
+    } else {
+        ui.painter().circle_filled(rect.center(), size / 2.0, palette.accent);
+        let initial = name.chars().find(|c| c.is_alphanumeric()).map_or("?".to_string(), |c| c.to_uppercase().to_string());
+        ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, initial, theme::bold(size * 0.45), palette.page);
+    }
+    response.on_hover_cursor(egui::CursorIcon::PointingHand)
+}
+
+/// The Noctorium account, as the website's account page has it: signing in, then the picture, the name, the email,
+/// the password and deleting it, each change proved with the password and a two-step code where the account has them.
+fn account_page(ui: &mut egui::Ui, app: &App, inputs: &mut Inputs, actions: &mut Vec<Action>) {
+    let palette = app.palette;
+    ui.label(RichText::new("Noctorium account").font(theme::bold(28.0)).color(palette.text));
+    ui.add_space(8.0);
+    let Some((user, _)) = &app.account else {
+        ui.label(RichText::new("One sign-in for the players and the website, and the statistics of what you listen to.").color(palette.subtext));
+        ui.add_space(6.0);
+        account_settings(ui, app, inputs, actions);
+        return;
+    };
+    ui.horizontal(|ui| {
+        avatar(ui, &palette, user.avatar_url.as_deref(), &user.display_name, 72.0);
+        ui.add_space(8.0);
+        ui.vertical(|ui| {
+            ui.label(RichText::new(&user.display_name).font(theme::bold(20.0)).color(palette.text));
+            ui.label(RichText::new(&user.email).color(palette.subtext));
+        });
+        ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+            if app.account_busy {
+                ui.add(egui::Spinner::new().color(palette.accent));
+            } else if secondary(ui, &palette, "Sign out").clicked() {
+                actions.push(Action::AccountSignOut);
+            }
+        });
+    });
+    let change = |action: &str| serde_json::json!({ "action": action });
+    let busy = app.account_busy;
+
+    heading(ui, &palette, "Picture", Some("Shown beside your name in every Noctorium."));
+    ui.horizontal_wrapped(|ui| {
+        ui.add_enabled_ui(!busy, |ui| {
+            if primary(ui, &palette, "Choose a picture…").clicked() {
+                actions.push(Action::AccountPickAvatar);
+            }
+            if user.linked.0 && secondary(ui, &palette, "Use Discord's").clicked() {
+                actions.push(Action::AccountProfile(change("avatar-discord")));
+            }
+            if user.linked.1 && secondary(ui, &palette, "Use Telegram's").clicked() {
+                actions.push(Action::AccountProfile(change("avatar-telegram")));
+            }
+            if user.avatar_url.is_some() && secondary(ui, &palette, "Remove").clicked() {
+                actions.push(Action::AccountProfile(change("avatar-remove")));
+            }
+        });
+    });
+
+    heading(ui, &palette, "Name", None);
+    ui.horizontal(|ui| {
+        let name = inputs.account_rename.get_or_insert_with(|| user.display_name.clone());
+        ui.add(egui::TextEdit::singleline(name).desired_width(260.0));
+        let ready = !busy && !name.trim().is_empty() && name.trim() != user.display_name;
+        if ui.add_enabled(ready, egui::Button::new("Save name")).clicked() {
+            actions.push(Action::AccountProfile(serde_json::json!({ "action": "name", "name": name.trim() })));
+        }
+    });
+
+    // What proves it is the owner: the password when the account has one, a code when two-step is on.
+    let (totp, telegram) = user.two_step;
+    let needs_code = totp || telegram;
+    heading(
+        ui,
+        &palette,
+        "Email, password and deleting",
+        Some(match (user.has_password, needs_code) {
+            (true, true) => "Each asks for your password and a two-step code. A change signs your other devices out.",
+            (true, false) => "Each asks for your password. A change signs your other devices out.",
+            (false, true) => "Each asks for a two-step code. A change signs your other devices out.",
+            (false, false) => "A change signs your other devices out.",
+        }),
+    );
+    egui::Grid::new("account-proof").num_columns(2).spacing(vec2(12.0, 8.0)).show(ui, |ui| {
+        if user.has_password {
+            ui.label("Password");
+            ui.add(egui::TextEdit::singleline(&mut inputs.account_current).password(true).desired_width(260.0));
+            ui.end_row();
+        }
+        if needs_code {
+            ui.label(if totp { "Two-step code" } else { "Telegram code" });
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut inputs.account_code).desired_width(160.0));
+                if telegram && secondary(ui, &palette, "Send me a code").clicked() {
+                    actions.push(Action::AccountChangeCode);
+                }
+            });
+            ui.end_row();
+        }
+        let proved = (!user.has_password || !inputs.account_current.is_empty()) && (!needs_code || !inputs.account_code.trim().is_empty());
+        let (current, code) = (inputs.account_current.clone(), inputs.account_code.trim().to_string());
+        let with_proof = |mut body: serde_json::Value, password_key: &str| {
+            if user.has_password {
+                body[password_key] = current.clone().into();
+            }
+            if needs_code {
+                body["code"] = code.clone().into();
+            }
+            body
+        };
+        ui.label("New email");
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut inputs.account_new_email).desired_width(260.0));
+            let ready = !busy && proved && inputs.account_new_email.contains('@');
+            if ui.add_enabled(ready, egui::Button::new("Change email")).clicked() {
+                actions.push(Action::AccountProfile(with_proof(serde_json::json!({ "action": "email", "email": inputs.account_new_email.trim() }), "password")));
+            }
+        });
+        ui.end_row();
+        if user.has_password {
+            ui.label("New password");
+            ui.horizontal(|ui| {
+                ui.add(egui::TextEdit::singleline(&mut inputs.account_new_password).password(true).desired_width(260.0));
+                let ready = !busy && proved && !inputs.account_new_password.is_empty();
+                if ui.add_enabled(ready, egui::Button::new("Change password")).clicked() {
+                    actions.push(Action::AccountProfile(with_proof(serde_json::json!({ "action": "password", "password": inputs.account_new_password }), "current")));
+                }
+            });
+            ui.end_row();
+        }
+        ui.label(RichText::new("Delete").color(palette.error));
+        ui.horizontal(|ui| {
+            ui.add(egui::TextEdit::singleline(&mut inputs.account_confirm).hint_text("delete my account").desired_width(260.0));
+            let ready = !busy && proved && inputs.account_confirm.trim().eq_ignore_ascii_case("delete my account");
+            if ui.add_enabled(ready, egui::Button::new(RichText::new("Delete the account").color(palette.error))).clicked() {
+                actions.push(Action::AccountProfile(with_proof(serde_json::json!({ "action": "delete", "confirm": inputs.account_confirm.trim() }), "password")));
+                inputs.account_confirm.clear();
+            }
+        });
+        ui.end_row();
+    });
+    if !user.has_password {
+        ui.label(RichText::new("This account signs in with Discord or Telegram, so it has no password to change.").color(palette.faint));
+    }
+    ui.label(RichText::new("Deleting removes the account, its statistics and its links for good, on every device.").color(palette.faint));
 }
 
 pub(super) fn strip(
