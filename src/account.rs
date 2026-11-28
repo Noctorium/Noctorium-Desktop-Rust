@@ -254,6 +254,105 @@ pub fn avatar_jpeg(bytes: &[u8]) -> Result<Vec<u8>, String> {
     Ok(out.into_inner())
 }
 
+/// The account's full statistics, as the stats service works them out: the same figures and charts as Noctorium Stats.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct FullStats {
+    pub streams: u64,
+    pub unique_tracks: u64,
+    pub artists: u64,
+    pub ms_played: u64,
+    pub by_provider: Vec<Share>,
+    pub top_tracks: Vec<TopTrack>,
+    pub top_artists: Vec<TopArtist>,
+    pub timeline: Timeline,
+    pub hourly: Vec<HourSlot>,
+    pub weekdays: Vec<DaySlot>,
+    pub recent: Vec<Play>,
+    pub streak: Streak,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct Share {
+    pub provider: String,
+    pub streams: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct TopTrack {
+    pub title: String,
+    pub artist: String,
+    pub streams: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct TopArtist {
+    pub artist: String,
+    pub streams: u64,
+    pub minutes: u64,
+    pub tracks: u64,
+}
+
+/// `bucket` is "day", or "month" over the longest spans.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct Timeline {
+    pub bucket: String,
+    pub points: Vec<Point>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct Point {
+    pub start: String,
+    pub minutes: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct HourSlot {
+    pub hour: u32,
+    pub minutes: u64,
+}
+
+/// `day` is 1 for Monday to 7 for Sunday.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct DaySlot {
+    pub day: u32,
+    pub minutes: u64,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(rename_all = "camelCase", default)]
+pub struct Play {
+    pub title: String,
+    pub artist: String,
+    pub provider: String,
+    pub played_at: String,
+}
+
+/// Days in a row with something played, over the whole history whatever the span.
+#[derive(Debug, Clone, Default, PartialEq, serde::Deserialize)]
+#[serde(default)]
+pub struct Streak {
+    pub current: u64,
+    pub longest: u64,
+}
+
+/// The full statistics over `range` (7d, 30d, 90d, 365d or all), with days and hours on this computer's clock.
+pub fn full_stats(token: &str, range: &str) -> Result<FullStats, String> {
+    let tz = chrono::Local::now().offset().local_minus_utc() / 60;
+    let (status, body) = send("GET", &format!("/api/stats?range={range}&tz={tz}&limit=10"), Some(token), None)?;
+    if !(200..300).contains(&status) {
+        return Err(format!("Your stats could not be read (HTTP {status})."));
+    }
+    serde_json::from_value(body).map_err(|e| format!("Your stats could not be read: {e}"))
+}
+
 pub fn stats(token: &str) -> Result<Stats, String> {
     let (status, body) = send("GET", "/api/stats", Some(token), None)?;
     if !(200..300).contains(&status) {

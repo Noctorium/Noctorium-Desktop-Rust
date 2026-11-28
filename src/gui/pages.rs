@@ -229,6 +229,7 @@ pub fn central(app: &App, ctx: &egui::Context, inputs: &mut Inputs, actions: &mu
                     match app.page.clone() {
                         Page::Profile => profile_page(ui, app, inputs, actions),
                         Page::Account => account_page(ui, app, inputs, actions),
+                        Page::Stats => super::stats::stats_page(ui, app, actions),
                         Page::Home => home(ui, app, actions),
                         Page::Search => search(ui, app, inputs, actions),
                         Page::Library => library(ui, app, inputs, actions),
@@ -304,12 +305,20 @@ fn home(ui: &mut egui::Ui, app: &App, actions: &mut Vec<Action>) {
             // Right to left: the picture at the edge, the gear before it, then Refresh.
             let user = app.account.as_ref().map(|(user, _)| user);
             let shown_name = user.map_or(app.settings.profile_name.as_str(), |u| u.display_name.as_str());
-            if avatar(ui, &palette, user.and_then(|u| u.avatar_url.as_deref()), shown_name, 36.0)
-                .on_hover_text(if user.is_some() { "Your Noctorium account" } else { "Sign in to Noctorium" })
-                .clicked()
-            {
-                actions.push(Action::Open(Page::Account));
-            }
+            // The picture opens a choice of the account or its Stats, as in the other apps.
+            let picture = avatar(ui, &palette, user.and_then(|u| u.avatar_url.as_deref()), shown_name, 36.0)
+                .on_hover_text(if user.is_some() { "Your Noctorium account" } else { "Sign in to Noctorium" });
+            egui::Popup::menu(&picture).show(|ui| {
+                ui.set_min_width(150.0);
+                if ui.button("Account").clicked() {
+                    actions.push(Action::Open(Page::Account));
+                    ui.close();
+                }
+                if ui.button("Stats").clicked() {
+                    actions.push(Action::Open(Page::Stats));
+                    ui.close();
+                }
+            });
             if settings_on_home(app) && secondary(ui, &palette, "⚙").on_hover_text("Settings").clicked() {
                 actions.push(Action::Open(Page::Settings));
             }

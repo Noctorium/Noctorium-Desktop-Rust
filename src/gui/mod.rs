@@ -12,6 +12,7 @@ mod pages;
 mod player;
 mod radio;
 mod settings;
+mod stats;
 mod shadow;
 pub mod slint_ui;
 mod widgets;
@@ -124,6 +125,8 @@ pub enum Page {
     Profile,
     /// The Noctorium account: signing in and out, its picture, name, email and password, and deleting it.
     Account,
+    /// The account's statistics: streaks, charts, tops, the split by service and the latest.
+    Stats,
 }
 
 /// What a frame's drawing asked for.
@@ -156,6 +159,8 @@ pub enum Action {
     DeletePlaylist(String),
     SaveAsLocal(Playlist),
     Open(Page),
+    /// Stats over another span, by its code.
+    StatsRange(String),
     Back,
     Search,
     OpenLink(String),
@@ -461,6 +466,8 @@ pub enum Event {
     /// A sign-in waiting for its two-step codes.
     AccountVerify(crate::account::Challenge),
     AccountStats(Result<crate::account::Stats, String>),
+    /// The full statistics for a span, by its code.
+    FullStats(String, Result<crate::account::FullStats, String>),
     /// What a change to the account came to: its `action` ("avatar" for an upload, "code" for a Telegram code) and the
     /// service's answer. An empty error is a cancelled picture, said nothing about.
     AccountProfile { action: String, result: Result<serde_json::Value, String> },
@@ -807,6 +814,9 @@ pub struct App {
     /// The Noctorium account: who, its token, and its statistics once read.
     pub account: Option<(crate::account::User, String)>,
     pub account_stats: Option<crate::account::Stats>,
+    /// The Stats page's span, and what came back for it: None while it is asked for.
+    pub stats_range: String,
+    pub full_stats: Option<Result<crate::account::FullStats, String>>,
     pub account_busy: bool,
     /// A browser sign-in waiting to be allowed, and the switch that stops its wait.
     pub account_browser: Option<(crate::account::DeviceStart, std::sync::Arc<std::sync::atomic::AtomicBool>)>,
@@ -1046,6 +1056,8 @@ impl App {
             matches: std::sync::Arc::new(std::sync::Mutex::new(crate::matching::Store::open(&places_for_downloads))),
             account: None,
             account_stats: None,
+            stats_range: "30d".to_string(),
+            full_stats: None,
             account_busy: false,
             account_browser: None,
             account_verify: None,
@@ -1598,6 +1610,19 @@ impl App {
             if let Ok(text) = serde_json::to_string(&self.unreported_plays) {
                 let _ = std::fs::write(path, text);
             }
+        }
+    }
+
+    /// Asks for the Stats page's span afresh.
+    fn load_full_stats(&mut self) {
+        self.full_stats = None;
+        let range = self.stats_range.clone();
+        match self.account.clone() {
+            Some((_, token)) => self.spawn(move || {
+                let result = crate::account::full_stats(&token, &range);
+                Event::FullStats(range, result)
+            }),
+            None => self.full_stats = Some(Err("Sign in to your Noctorium account to see your stats.".into())),
         }
     }
 
@@ -2901,6 +2926,12 @@ impl App {
                 }
                 self.services.deezer_profile = Some(result);
             }
+            Event::FullStats(range, result) => {
+                // Only the span still asked for: a slow answer for one clicked past is dropped.
+                if range == self.stats_range {
+                    self.full_stats = Some(result);
+                }
+            }
             Event::AccountStats(result) => {
                 if let Ok(stats) = result {
                     self.account_stats = Some(stats);
@@ -3326,7 +3357,17 @@ impl App {
                 self.toast("Saved to your playlists", false);
                 self.open(Page::Playlist(id));
             }
-            Action::Open(page) => self.open(page),
+            Action::Open(page) => {
+                let stats = page == Page::Stats;
+                self.open(page);
+                if stats {
+                    self.load_full_stats();
+                }
+            }
+            Action::StatsRange(range) => {
+                self.stats_range = range;
+                self.load_full_stats();
+            }
             Action::Back => {
                 if let Some(previous) = self.history.pop() {
                     let metering = self.page == Page::NowPlaying;
